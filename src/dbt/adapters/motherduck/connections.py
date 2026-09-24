@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import psycopg
+import sqlparse
 from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
@@ -72,6 +73,41 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 return response, table
             finally:
                 cursor.close()
+
+    def add_query(
+        self,
+        sql,
+        auto_begin=True,
+        bindings=None,
+        abridge_sql_log=False,
+        retryable_exceptions=(),
+        retry_limit=1,
+    ):
+        # The endpoint binds a whole request before executing CREATE statements in it.
+        statements = sqlparse.split(sql) if bindings is None else [sql]
+        statements = [
+            statement
+            for statement in statements
+            if any(
+                token not in sqlparse.tokens.Whitespace
+                and token not in sqlparse.tokens.Comment
+                and value != ";"
+                for token, value in sqlparse.lexer.tokenize(statement)
+            )
+        ]
+        cursor = None
+        for statement in statements or [sql]:
+            if cursor is not None:
+                cursor.close()
+            connection, cursor = super().add_query(
+                statement,
+                auto_begin,
+                bindings,
+                abridge_sql_log,
+                retryable_exceptions,
+                retry_limit,
+            )
+        return connection, cursor
 
     def cancel(self, connection):
         connection.handle.cancel_safe()

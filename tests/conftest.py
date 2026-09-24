@@ -14,3 +14,6 @@ def pytest_collection_modifyitems(items):
         category = item.path.relative_to(item.config.rootpath / "tests").parts[0]
         if category in ("unit", "integration"):
             item.add_marker(getattr(pytest.mark, category))
+        for marker in item.iter_markers("skip_database_type"):
+            if item.config.getoption("--database-type") in marker.args:
+                item.add_marker(pytest.mark.skip(reason=marker.kwargs["reason"]))

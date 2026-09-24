@@ -15,6 +15,7 @@ dependencies = [
     "dbt-adapters>=1.24.5,<2",
     "dbt-common>=1.37.5,<2",
     "psycopg[binary]>=3.3.6,<4",
+    "sqlparse>=0.6,<1",
 ]
 
 [dependency-groups]
@@ -33,6 +34,7 @@ addopts = "--import-mode=importlib"
 markers = [
     "integration: requires a live MotherDuck PostgreSQL endpoint",
     "unit: does not require a database",
+    "skip_database_type(*types, reason): excludes unsupported database types",
 ]
 
 [tool.ruff]

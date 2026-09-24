@@ -47,6 +47,31 @@ def test_execute_converts_results(connection_adapter):
         assert response.rows_affected == 1
 
 
+def test_dependent_statements_and_rollback(connection_adapter):
+    with connection_adapter.connection_named("dependent_statements"):
+        _, table = connection_adapter.execute(
+            "CREATE TABLE main.statement_probe (value VARCHAR); "
+            "INSERT INTO main.statement_probe VALUES ('a;b'), ($literal$c;d$literal$); "
+            "-- semicolon in a comment;\nSELECT value FROM main.statement_probe ORDER BY value; ; /* tail; */ -- last comment",
+            auto_begin=True,
+            fetch=True,
+        )
+        assert [row[0] for row in table.rows] == ["a;b", "c;d"]
+        connection_adapter.commit_if_has_connection()
+        with pytest.raises(DbtDatabaseError):
+            connection_adapter.execute(
+                "INSERT INTO main.statement_probe VALUES ('rollback'); "
+                "SELECT error('intentional statement failure')",
+                auto_begin=True,
+            )
+    with connection_adapter.connection_named("verify_statement_rollback"):
+        _, table = connection_adapter.execute(
+            "SELECT count(*) FROM main.statement_probe", fetch=True
+        )
+        assert table.rows[0][0] == 2
+        connection_adapter.execute("DROP TABLE main.statement_probe")
+
+
 def test_query_failure_discards_connection(connection_adapter):
     with connection_adapter.connection_named("query_failure"):
         connection_adapter.execute("SELECT 1", auto_begin=True)

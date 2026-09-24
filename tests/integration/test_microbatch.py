@@ -1,0 +1,557 @@
+# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
+# tests/functional/adapter/test_incremental_microbatch.py.
+# Omitted inherited/time-frozen cases; lookback uses recent real UTC dates.
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from dbt.exceptions import ParsingError
+from dbt.tests.util import relation_from_name, run_dbt
+
+# Validation models
+models__microbatch_missing_event_time = """
+{{ config(materialized='incremental', incremental_strategy='microbatch') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time
+"""
+
+models__microbatch_missing_batch_context = """
+{{ config(materialized='incremental', incremental_strategy='microbatch', event_time='event_time') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time
+"""
+
+models__microbatch_unique_key_not_supported = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    unique_key='id',
+    event_time='event_time',
+    begin='2025-01-01',
+    batch_size='day'
+) }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time
+"""
+
+# Scenario models
+models__microbatch_exec_input = """
+{{ config(materialized='table') }}
+
+select 1 as id, '2025-01-01'::date as event_ts
+union all
+select 2 as id, '2025-01-02'::date as event_ts
+union all
+select 3 as id, '2025-01-03'::date as event_ts
+"""
+
+models__microbatch_exec = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0)
+) }}
+
+select id, event_ts as event_time from {{ ref('microbatch_exec_input') }}
+"""
+
+models__microbatch_event_date_input = """
+{{ config(materialized='table', event_time='event_date  ') }}
+
+select 1 as id, '2025-01-01'::date as event_date
+union all
+select 2 as id, '2025-01-02'::date as event_date
+union all
+select 3 as id, '2025-01-03'::date as event_date
+"""
+
+models__microbatch_event_date = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_date',
+    batch_size='day',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0)
+) }}
+
+select id, event_date from {{ ref('microbatch_event_date_input') }}
+"""
+
+models__microbatch_batch_hour_input = """
+{{ config(materialized='table', event_time='event_time') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time
+union all
+select 2 as id, '2025-01-01 01:00:00'::timestamp as event_time
+union all
+select 3 as id, '2025-01-01 02:00:00'::timestamp as event_time
+"""
+
+models__microbatch_batch_hour = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='hour',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0)
+) }}
+
+select id, event_time from {{ ref('microbatch_batch_hour_input') }}
+"""
+
+models__microbatch_batch_month_input = """
+{{ config(materialized='table', event_time='event_time') }}
+
+select 1 as id, '2025-01-01'::timestamp as event_time
+union all
+select 2 as id, '2025-02-01'::timestamp as event_time
+union all
+select 3 as id, '2025-03-01'::timestamp as event_time
+"""
+
+models__microbatch_batch_month = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='month',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0)
+) }}
+
+select id, event_time from {{ ref('microbatch_batch_month_input') }}
+"""
+
+models__microbatch_reprocess_input = """
+{{ config(materialized='table', event_time='event_time') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time, 'alpha' as note
+union all
+select 2 as id, '2025-01-02 00:00:00'::timestamp as event_time, 'bravo' as note
+union all
+select 3 as id, '2025-01-03 00:00:00'::timestamp as event_time, 'charlie' as note
+"""
+
+models__microbatch_reprocess = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0)
+) }}
+
+select id, event_time, note from {{ ref('microbatch_reprocess_input') }}
+"""
+
+
+class TestMicrobatchValidationMissingEventTime:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_missing_event_time.sql": models__microbatch_missing_event_time,
+        }
+
+    def test_missing_event_time_config(self, project):
+        with pytest.raises(ParsingError) as excinfo:
+            run_dbt(
+                ["run", "--select", "microbatch_missing_event_time"], expect_pass=False
+            )
+
+        assert "must provide an 'event_time'" in str(excinfo.value)
+
+
+class TestMicrobatchValidationMissingBatchContext:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_missing_batch_context.sql": models__microbatch_missing_batch_context,
+        }
+
+    def test_missing_batch_context(self, project):
+        with pytest.raises(ParsingError) as excinfo:
+            run_dbt(
+                ["run", "--select", "microbatch_missing_batch_context"],
+                expect_pass=False,
+            )
+
+        assert "must provide a 'begin'" in str(excinfo.value)
+
+
+class TestMicrobatchUniqueKeyNotSupported:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_unique_key_not_supported.sql": models__microbatch_unique_key_not_supported,
+        }
+
+    def test_unique_key_not_supported(self, project, capsys):
+        # Bound the run to two daily batches. The model config has a fixed
+        # begin='2025-01-01' and no end, so without explicit event-time bounds
+        # dbt expands the microbatch into one daily batch per day from that
+        # date to "now" -- a count that grows every day and, since each batch
+        # spins up a relation, made this test progressively slower (notably on
+        # MotherDuck, where every batch is a network round-trip). The
+        # unique_key rejection only fires on the incremental path, so we need
+        # the first batch to create the table and the second to trigger the
+        # error: a two-day window exercises the same validation with exactly
+        # two batches.
+        run_dbt(
+            [
+                "run",
+                "--select",
+                "microbatch_unique_key_not_supported",
+                "--event-time-start",
+                "2025-01-01",
+                "--event-time-end",
+                "2025-01-03",
+            ],
+            expect_pass=False,
+        )
+        captured = capsys.readouterr()
+        assert "does not support 'unique_key'" in (captured.out + captured.err)
+
+
+class TestMicrobatchScenarios:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_exec_input.sql": models__microbatch_exec_input,
+            "microbatch_exec.sql": models__microbatch_exec,
+            "microbatch_event_date_input.sql": models__microbatch_event_date_input,
+            "microbatch_event_date.sql": models__microbatch_event_date,
+            "microbatch_batch_hour_input.sql": models__microbatch_batch_hour_input,
+            "microbatch_batch_hour.sql": models__microbatch_batch_hour,
+            "microbatch_batch_month_input.sql": models__microbatch_batch_month_input,
+            "microbatch_batch_month.sql": models__microbatch_batch_month,
+            "microbatch_reprocess_input.sql": models__microbatch_reprocess_input,
+            "microbatch_reprocess.sql": models__microbatch_reprocess,
+        }
+
+    def _run_with_bounds(
+        self,
+        selects,
+        project,
+        expect_pass=True,
+        full_refresh=False,
+        start="2025-01-01",
+        end="2025-01-04",
+    ):
+        args = [
+            "run",
+            "--select",
+            selects,
+            "--event-time-start",
+            start,
+            "--event-time-end",
+            end,
+        ]
+        if full_refresh:
+            args.append("--full-refresh")
+        run_dbt(args, expect_pass=expect_pass)
+
+    def test_microbatch_runs_twice_without_changes(self, project):
+        self._run_with_bounds(
+            "microbatch_exec_input microbatch_exec",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+        )
+
+        self._run_with_bounds("microbatch_exec", project, expect_pass=True)
+
+        relation = relation_from_name(project.adapter, "microbatch_exec")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+    def test_microbatch_inserts_new_batches(self, project):
+        self._run_with_bounds(
+            "microbatch_exec_input microbatch_exec",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_exec")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+        source = relation_from_name(project.adapter, "microbatch_exec_input")
+        project.run_sql(
+            f"insert into {source} (id, event_ts) values "
+            "(4, '2025-01-02 12:00:00'::timestamp), "
+            "(5, '2025-01-03 12:00:00'::timestamp)"
+        )
+
+        self._run_with_bounds("microbatch_exec", project, expect_pass=True)
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 5
+
+    def test_microbatch_supports_date_event_time(self, project):
+        self._run_with_bounds(
+            "microbatch_event_date_input microbatch_event_date",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_event_date")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+        source = relation_from_name(project.adapter, "microbatch_event_date_input")
+        project.run_sql(
+            f"insert into {source} (id, event_date) values "
+            "(4, '2025-01-02'::date), (5, '2025-01-03'::date)"
+        )
+
+        self._run_with_bounds("microbatch_event_date", project, expect_pass=True)
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 5
+
+    def test_microbatch_supports_hour_batch_size(self, project):
+        # All data lives in the first three hours of 2025-01-01, so bound the
+        # run to a 3-hour window. The default day-granularity bounds
+        # (2025-01-01..2025-01-04) would fan out into 72 hourly batches per
+        # run for no added coverage -- a needless cost, especially on
+        # MotherDuck where every batch is a network round-trip.
+        hour_start = "2025-01-01 00:00:00"
+        hour_end = "2025-01-01 03:00:00"
+        self._run_with_bounds(
+            "microbatch_batch_hour_input microbatch_batch_hour",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+            start=hour_start,
+            end=hour_end,
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_batch_hour")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+        source = relation_from_name(project.adapter, "microbatch_batch_hour_input")
+        project.run_sql(
+            f"insert into {source} (id, event_time) values "
+            "(4, '2025-01-01 00:30:00'::timestamp), "
+            "(5, '2025-01-01 00:45:00'::timestamp)"
+        )
+
+        self._run_with_bounds(
+            "microbatch_batch_hour",
+            project,
+            expect_pass=True,
+            start=hour_start,
+            end=hour_end,
+        )
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 5
+
+    def test_microbatch_supports_month_batch_size(self, project):
+        self._run_with_bounds(
+            "microbatch_batch_month_input microbatch_batch_month",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+            end="2025-04-01",
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_batch_month")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+        source = relation_from_name(project.adapter, "microbatch_batch_month_input")
+        project.run_sql(
+            f"insert into {source} (id, event_time) values "
+            "(4, '2025-02-01'::timestamp), (5, '2025-03-01'::timestamp)"
+        )
+
+        self._run_with_bounds(
+            "microbatch_batch_month", project, expect_pass=True, end="2025-04-01"
+        )
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 5
+
+    def test_microbatch_reprocesses_existing_batch(self, project):
+        self._run_with_bounds(
+            "microbatch_reprocess_input microbatch_reprocess",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_reprocess")
+        note = project.run_sql(f"SELECT note FROM {relation} WHERE id = 2", fetch="one")
+        assert note[0] == "bravo"
+
+        source = relation_from_name(project.adapter, "microbatch_reprocess_input")
+        project.run_sql(f"update {source} set note = 'bravo-updated' where id = 2")
+        project.run_sql(
+            f"insert into {source} (id, event_time, note) values "
+            "(4, '2025-01-02 12:00:00'::timestamp, 'delta')"
+        )
+
+        self._run_with_bounds("microbatch_reprocess", project, expect_pass=True)
+
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 4
+
+        note = project.run_sql(f"SELECT note FROM {relation} WHERE id = 2", fetch="one")
+        assert note[0] == "bravo-updated"
+
+    def test_microbatch_with_timestamp_cli_args(self, project):
+        """Test that CLI args with full timestamp format work correctly."""
+        # Use timestamp format with time component in CLI args
+        self._run_with_bounds(
+            "microbatch_exec_input microbatch_exec",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+            start="2025-01-01 00:00:00",
+            end="2025-01-04 00:00:00",
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_exec")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+        # Test with time component - dbt truncates to batch_size boundaries (day)
+        # so 2025-01-01 12:00:00 to 2025-01-03 12:00:00 still processes 3 day batches
+        self._run_with_bounds(
+            "microbatch_exec_input microbatch_exec",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+            start="2025-01-01 12:00:00",
+            end="2025-01-03 12:00:00",
+        )
+
+        # With batch_size='day', batches are aligned to full days
+        # All 3 records are included as their days fall within the range
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        assert count[0] == 3
+
+    def test_microbatch_with_timestamp_cli_args_hourly(self, project):
+        """Test that CLI args with timestamp format work correctly for hourly batches."""
+        # Run with partial hour range - only process T01 and T02 batches
+        # id=1 (2025-01-01 00:00:00) - excluded (T00 batch not processed)
+        # id=2 (2025-01-01 01:00:00) - included (T01 batch)
+        # id=3 (2025-01-01 02:00:00) - included (T02 batch)
+        self._run_with_bounds(
+            "microbatch_batch_hour_input microbatch_batch_hour",
+            project,
+            expect_pass=True,
+            full_refresh=True,
+            start="2025-01-01 01:00:00",
+            end="2025-01-01 03:00:00",
+        )
+
+        relation = relation_from_name(project.adapter, "microbatch_batch_hour")
+        count = project.run_sql(
+            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+        )
+        # Only 2 records because T00 batch (id=1) was never processed
+        assert count[0] == 2
+
+        # Verify the correct records are present
+        ids = project.run_sql(f"SELECT id FROM {relation} ORDER BY id", fetch="all")
+        assert [row[0] for row in ids] == [2, 3]
+
+
+models__microbatch_lookback_input = """
+{{ config(materialized='table', event_time='event_time') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 2 as id, '2025-01-02 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 3 as id, '2025-01-03 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 4 as id, '2025-01-04 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 5 as id, '2025-01-05 00:00:00'::timestamp as event_time, 'v1' as version
+"""
+
+models__microbatch_lookback = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0),
+    lookback=3
+) }}
+
+select id, event_time, version from {{ ref('microbatch_lookback_input') }}
+"""
+
+
+class TestMicrobatchLookback:
+    @pytest.fixture(scope="class")
+    def lookback_start(self):
+        return datetime.now(timezone.utc).date() - timedelta(days=5)
+
+    @pytest.fixture(scope="class")
+    def models(self, lookback_start):
+        source = models__microbatch_lookback_input
+        for offset in range(5):
+            source = source.replace(
+                f"2025-01-0{offset + 1}",
+                (lookback_start + timedelta(days=offset)).isoformat(),
+            )
+        target = models__microbatch_lookback.replace(
+            "modules.datetime.datetime(2025, 1, 1, 0, 0)",
+            f"modules.datetime.datetime({lookback_start.year}, {lookback_start.month}, {lookback_start.day}, 0, 0)",
+        )
+        return {
+            "microbatch_lookback_input.sql": source,
+            "microbatch_lookback.sql": target,
+        }
+
+    def test_lookback_without_mocked_time(self, project, lookback_start):
+        run_dbt(
+            [
+                "run",
+                "--event-time-start",
+                lookback_start.isoformat(),
+                "--event-time-end",
+                (lookback_start + timedelta(days=4)).isoformat(),
+            ]
+        )
+        source = relation_from_name(project.adapter, "microbatch_lookback_input")
+        target = relation_from_name(project.adapter, "microbatch_lookback")
+        assert project.run_sql(f"SELECT count(*) FROM {target}", fetch="one") == (4,)
+        project.run_sql(f"UPDATE {source} SET version = 'v2' WHERE id IN (2, 4)")
+        # No explicit bounds: exercise dbt's checkpoint/lookback-derived start.
+        run_dbt(["run", "--select", "microbatch_lookback"])
+        assert project.run_sql(f"SELECT count(*) FROM {target}", fetch="one") == (5,)
+        assert project.run_sql(
+            f"SELECT version FROM {target} WHERE id = 4", fetch="one"
+        ) == ("v2",)
+        assert project.run_sql(
+            f"SELECT version FROM {target} WHERE id = 2", fetch="one"
+        ) == ("v1",)
