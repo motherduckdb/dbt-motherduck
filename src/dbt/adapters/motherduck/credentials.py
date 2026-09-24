@@ -1,0 +1,51 @@
+from dataclasses import dataclass, field
+
+from dbt.adapters.contracts.connection import Credentials
+from dbt_common.exceptions import DbtRuntimeError
+
+
+@dataclass
+class MotherDuckCredentials(Credentials):
+    host: str
+    token: str = field(repr=False)
+    port: int = 5432
+    user: str = "postgres"
+    sslrootcert: str = "system"
+    connect_timeout: int = 10
+
+    def __post_init__(self):
+        for name in ("host", "token", "database", "schema", "user", "sslrootcert"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                raise DbtRuntimeError(
+                    f"{name} must be a non-empty string without NUL characters"
+                )
+        if "=" in self.database or self.database.startswith(
+            ("postgres://", "postgresql://")
+        ):
+            raise DbtRuntimeError(
+                "database must be a database name, not a connection string"
+            )
+        if type(self.port) is not int or not 1 <= self.port <= 65535:
+            raise DbtRuntimeError("port must be an integer between 1 and 65535")
+        if type(self.connect_timeout) is not int or self.connect_timeout < 1:
+            raise DbtRuntimeError("connect_timeout must be a positive integer")
+
+    @property
+    def type(self):
+        return "motherduck"
+
+    @property
+    def unique_field(self):
+        return self.host
+
+    def _connection_keys(self):
+        return (
+            "host",
+            "port",
+            "user",
+            "database",
+            "schema",
+            "sslrootcert",
+            "connect_timeout",
+        )

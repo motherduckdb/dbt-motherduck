@@ -20,3 +20,10 @@ def test_bundled_dbt_project():
     assert (Path(PACKAGE_PATH) / "dbt_project.yml").read_text(encoding="utf-8") == (
         project.read_text(encoding="utf-8")
     )
+
+
+def test_dbt_discovers_adapter_version():
+    "sanity check"
+    from dbt.version import _get_dbt_plugins_info
+
+    assert ("motherduck", "0.1.0-dev0") in list(_get_dbt_plugins_info())

@@ -367,6 +367,7 @@ version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "dbt-adapters" },
+    { name = "dbt-common" },
     { name = "dbt-core" },
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -382,6 +383,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "dbt-adapters", specifier = ">=1.24.5,<2" },
+    { name = "dbt-common", specifier = ">=1.37.5,<2" },
     { name = "dbt-core", specifier = ">=1.12.5,<1.13" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
 ]

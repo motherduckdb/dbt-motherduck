@@ -1,1 +1,15 @@
 # dbt-motherduck
+
+```yaml
+dwh:
+  target: dev
+  outputs:
+    dev:
+      type: motherduck
+      host: "{{ env_var('MOTHERDUCK_HOST', 'pg.us-east-1-aws.motherduck.com') }}"
+      database: "{{ env_var('MOTHERDUCK_TEST_DATABASE') }}"
+      schema: "{{ env_var('MOTHERDUCK_SCHEMA') }}"
+      token: "{{ env_var('DBT_ENV_SECRET_MOTHERDUCK_TOKEN') }}"
+      sslrootcert: "{{ env_var('MOTHERDUCK_SSLROOTCERT', 'system') }}"
+      threads: 2
+```
