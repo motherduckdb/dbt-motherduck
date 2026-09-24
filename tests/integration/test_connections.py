@@ -1,3 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from decimal import Decimal
+from queue import Queue
+from socket import AF_INET, SHUT_RDWR, SOCK_STREAM, fromfd
+from time import monotonic, sleep
+
 import psycopg
 import pytest
 from dbt.adapters.contracts.connection import ConnectionState
@@ -45,6 +52,52 @@ def test_execute_converts_results(connection_adapter):
         assert table.rows[0]["answer"] == 1
         assert response.code == "SELECT"
         assert response.rows_affected == 1
+
+
+def test_response_metadata_and_fetch_limit(connection_adapter):
+    with connection_adapter.connection_named("responses"):
+        response, table = connection_adapter.execute(
+            "CREATE TABLE main.response_probe (id INTEGER)"
+        )
+        assert response.code == "CREATE"
+        assert len(table.rows) == 0
+        try:
+            response, _ = connection_adapter.execute(
+                "INSERT INTO main.response_probe VALUES (1), (2), (3)"
+            )
+            assert response.code == "INSERT"
+            assert response.rows_affected == 3
+            response, table = connection_adapter.execute(
+                "SELECT id FROM main.response_probe ORDER BY id", fetch=True, limit=2
+            )
+            assert response.rows_affected == 3
+            assert [row[0] for row in table.rows] == [1, 2]
+            _, table = connection_adapter.execute(
+                "SELECT id FROM main.response_probe WHERE false", fetch=True
+            )
+            assert table.column_names == ("id",)
+            assert len(table.rows) == 0
+            response, _ = connection_adapter.execute(
+                "UPDATE main.response_probe SET id = id + 10 WHERE id < 3"
+            )
+            assert response.code == "UPDATE"
+            assert response.rows_affected is None
+            response, _ = connection_adapter.execute(
+                "DELETE FROM main.response_probe WHERE id > 10"
+            )
+            assert response.code == "DELETE"
+            assert response.rows_affected is None
+            response, _ = connection_adapter.execute(
+                "DELETE FROM main.response_probe WHERE id > 10"
+            )
+            assert response.rows_affected is None
+            _, table = connection_adapter.execute(
+                "SELECT id FROM main.response_probe", fetch=True
+            )
+            assert [row[0] for row in table.rows] == [3]
+        finally:
+            with connection_adapter.connection_named("responses_cleanup"):
+                connection_adapter.execute("DROP TABLE main.response_probe")
 
 
 def test_dependent_statements_and_rollback(connection_adapter):
@@ -110,3 +163,156 @@ def test_rejected_authentication(connection_adapter):
         assert connection.handle is None
         assert connection_adapter.config.credentials.token not in str(error.value)
         assert error.value.__suppress_context__
+
+
+def test_bound_types_and_result_conversion(connection_adapter):
+    values = (
+        None,
+        Decimal("123456789.123456789"),
+        datetime(2025, 1, 2, 3, 4, 5, 123456),
+        datetime(2025, 1, 2, 1, 4, 5, tzinfo=timezone.utc),
+        b"\x00\xffA",
+        [1, None, 3],
+        "quotes ' ; and non-ASCII: café",
+    )
+    with connection_adapter.connection_named("types"):
+        connection_adapter.execute(
+            "CREATE TABLE main.type_probe (missing INTEGER, amount DECIMAL(20,9), "
+            "ts TIMESTAMP, tz TIMESTAMPTZ, payload BLOB, items INTEGER[], label VARCHAR)"
+        )
+        try:
+            _, cursor = connection_adapter.connections.add_query(
+                "INSERT INTO main.type_probe VALUES (%s, %s, %s, %s, %s, [1, NULL, 3], %s)",
+                auto_begin=False,
+                bindings=(*values[:5], values[6]),
+            )
+            cursor.close()
+            _, cursor = connection_adapter.connections.add_query(
+                "SELECT * FROM main.type_probe", auto_begin=False
+            )
+            try:
+                assert cursor.fetchone() == values
+                assert [column.type_code for column in cursor.description] == [
+                    23,
+                    1700,
+                    1114,
+                    1184,
+                    17,
+                    1007,
+                    25,
+                ]
+            finally:
+                cursor.close()
+            _, table = connection_adapter.execute(
+                "SELECT * FROM main.type_probe", fetch=True
+            )
+            assert tuple(table.rows[0]) == (
+                *values[:4],
+                str(values[4]),
+                "[1, null, 3]",
+                values[6],
+            )
+            _, columns = connection_adapter.execute(
+                "DESCRIBE main.type_probe", fetch=True
+            )
+            assert [row[1] for row in columns.rows] == [
+                "INTEGER",
+                "DECIMAL(20,9)",
+                "TIMESTAMP",
+                "TIMESTAMP WITH TIME ZONE",
+                "BLOB",
+                "INTEGER[]",
+                "VARCHAR",
+            ]
+            _, nested = connection_adapter.execute(
+                "SELECT {'id': 1, 'name': 'a;b'} AS nested", fetch=True
+            )
+            assert nested.rows[0][0] == "{'id': 1, 'name': a;b}"
+        finally:
+            with connection_adapter.connection_named("types_cleanup"):
+                connection_adapter.execute("DROP TABLE main.type_probe")
+
+
+def test_concurrent_session_isolation(connection_adapter):
+    with connection_adapter.connection_named("reader"):
+        connection_adapter.execute("CREATE TABLE main.isolation_probe (id INTEGER)")
+        reader = connection_adapter.connections.get_thread_connection().handle
+        messages = Queue()
+        proceed = Queue()
+
+        def write():
+            with connection_adapter.connection_named("writer"):
+                connection_adapter.execute(
+                    "INSERT INTO main.isolation_probe VALUES (1)", auto_begin=True
+                )
+                writer = connection_adapter.connections.get_thread_connection().handle
+                messages.put(writer)
+                assert proceed.get(timeout=30) == "commit"
+                connection_adapter.commit_if_has_connection()
+            return writer.closed
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(write)
+                try:
+                    writer = messages.get(timeout=30)
+                    assert writer is not reader
+                    _, table = connection_adapter.execute(
+                        "SELECT count(*) FROM main.isolation_probe", fetch=True
+                    )
+                    assert table.rows[0][0] == 0
+                finally:
+                    proceed.put("commit")
+                assert future.result(timeout=30)
+            assert not reader.closed
+            _, table = connection_adapter.execute(
+                "SELECT count(*) FROM main.isolation_probe", fetch=True
+            )
+            assert table.rows[0][0] == 1
+        finally:
+            connection_adapter.execute("DROP TABLE main.isolation_probe")
+
+
+def test_cancel_running_query(connection_adapter):
+    connections = Queue()
+
+    def run_query():
+        with connection_adapter.connection_named("cancel_target"):
+            connection = connection_adapter.connections.get_thread_connection()
+            handle = connection.handle
+            connections.put((connection, fromfd(handle.fileno(), AF_INET, SOCK_STREAM)))
+            with pytest.raises(DbtDatabaseError, match="(?i)interrupt|cancel"):
+                connection_adapter.execute(
+                    "SELECT sum(sin(i)) FROM range(1000000000) AS t(i)", fetch=True
+                )
+            assert handle.closed
+            assert not connection.transaction_open
+            assert connection.state == ConnectionState.CLOSED
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(run_query)
+        connection, query_socket = connections.get(timeout=30)
+        handle = connection.handle
+        try:
+            deadline = monotonic() + 10
+            while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
+                assert monotonic() < deadline, "Query did not become active"
+                sleep(0.01)
+            connection_adapter.connections.cancel(connection)
+            future.result(timeout=30)
+        finally:
+            try:
+                if not future.done():
+                    # Unblock libpq before executor shutdown if cancellation failed.
+                    try:
+                        query_socket.shutdown(SHUT_RDWR)
+                    except OSError:
+                        pass
+            finally:
+                query_socket.close()
+    with connection_adapter.connection_named("after_cancel"):
+        _, table = connection_adapter.execute("SELECT 42", fetch=True)
+        assert table.rows[0][0] == 42
+        assert (
+            connection_adapter.connections.get_thread_connection().handle is not handle
+        )
