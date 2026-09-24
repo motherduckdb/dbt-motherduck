@@ -54,10 +54,16 @@ class MotherDuckConnectionManager(SQLConnectionManager):
     @classmethod
     def get_response(cls, cursor):
         status = cursor.statusmessage or "OK"
+        # DuckDB DML returns a Count row; cursor.rowcount counts that result row.
+        affected = cursor.pgresult.command_tuples
+        code = status.split()[0]
+        # The endpoint reports UPDATE/DELETE 1 even when zero or many rows change.
+        if code in {"UPDATE", "DELETE"}:
+            status, affected = code, None
         return AdapterResponse(
             _message=status,
-            code=status.split()[0],
-            rows_affected=cursor.rowcount if cursor.rowcount >= 0 else None,
+            code=code,
+            rows_affected=affected,
         )
 
     def execute(self, sql, auto_begin=False, fetch=False, limit=None):
