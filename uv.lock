@@ -370,6 +370,7 @@ dependencies = [
     { name = "dbt-common" },
     { name = "dbt-core" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "sqlparse" },
 ]
 
 [package.dev-dependencies]
@@ -387,6 +388,7 @@ requires-dist = [
     { name = "dbt-common", specifier = ">=1.37.5,<2" },
     { name = "dbt-core", specifier = ">=1.12.5,<1.13" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
+    { name = "sqlparse", specifier = ">=0.6,<1" },
 ]
 
 [package.metadata.requires-dev]
