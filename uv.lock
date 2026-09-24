@@ -377,6 +377,7 @@ lint = [
     { name = "ruff" },
 ]
 test = [
+    { name = "dbt-tests-adapter" },
     { name = "pytest" },
 ]
 
@@ -390,7 +391,10 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 lint = [{ name = "ruff", specifier = ">=0.14,<1" }]
-test = [{ name = "pytest", specifier = ">=8,<10" }]
+test = [
+    { name = "dbt-tests-adapter", specifier = ">=1.20,<1.21" },
+    { name = "pytest", specifier = ">=8,<10" },
+]
 
 [[package]]
 name = "dbt-protos"
@@ -402,6 +406,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fe/b9/b09b002cedb6817ea9d503a0c2adc7645b1b0749c174e2edd36cedeacb6b/dbt_protos-1.0.565.tar.gz", hash = "sha256:fabee73a6f98a7eb7e52ab34571ef24d82cce760829e268c7263a5805f3937cf", size = 188207, upload-time = "2026-08-14T12:37:15.762Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/76/68/a2a702510b5ae16f52a7b2f459e2e205cef6e79cf508e2611091a616245c/dbt_protos-1.0.565-py3-none-any.whl", hash = "sha256:130a8333fcd644ba1f00c8377e8f8013b28cca696a6af56037feb55a011f964c", size = 260078, upload-time = "2026-08-14T12:37:14.477Z" },
+]
+
+[[package]]
+name = "dbt-tests-adapter"
+version = "1.20.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dbt-adapters" },
+    { name = "dbt-common" },
+    { name = "freezegun" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/58/83/ede118214addb99e8c45338d8b18e30a22872fc8c3043f429a538232e529/dbt_tests_adapter-1.20.0.tar.gz", hash = "sha256:91562371852790a647c59270136a4461bfda7e7484f349fcd3473f0a1d6059c6", size = 175324, upload-time = "2026-05-22T09:23:56.379Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/53/860853817edbc50168af0e4520f6c203270e92e20f9edb2ca82c62116f3d/dbt_tests_adapter-1.20.0-py3-none-any.whl", hash = "sha256:333d0d08c1690278a8cf681989f6359a7a8a5b3da464f14430c3ea3ea32fa5ff", size = 250410, upload-time = "2026-05-22T09:23:54.353Z" },
 ]
 
 [[package]]
@@ -426,6 +445,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/0e/97c33bf5009bdbac74fd2beace167cab3f978feb69cc36f1ef79360d6c4e/exceptiongroup-1.3.1-py3-none-any.whl", hash = "sha256:a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598", size = 16740, upload-time = "2025-11-21T23:01:53.443Z" },
+]
+
+[[package]]
+name = "freezegun"
+version = "1.5.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/95/dd/23e2f4e357f8fd3bdff613c1fe4466d21bfb00a6177f238079b17f7b1c84/freezegun-1.5.5.tar.gz", hash = "sha256:ac7742a6cc6c25a2c35e9292dfd554b897b517d2dec26891a2e8debf205cb94a", size = 35914, upload-time = "2025-08-09T10:39:08.338Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/2e/b41d8a1a917d6581fc27a35d05561037b048e47df50f27f8ac9c7e27a710/freezegun-1.5.5-py3-none-any.whl", hash = "sha256:cd557f4a75cf074e84bc374249b9dd491eaeacd61376b9eb3c423282211619d2", size = 19266, upload-time = "2025-08-09T10:39:06.636Z" },
 ]
 
 [[package]]

@@ -1,0 +1,8 @@
+name: motherduck_smoke
+version: '1.0'
+config-version: 2
+profile: motherduck_smoke
+model-paths: [models]
+seed-paths: [seeds]
+flags:
+  send_anonymous_usage_stats: false
