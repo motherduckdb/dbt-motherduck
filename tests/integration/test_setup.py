@@ -4,6 +4,18 @@ from psycopg import sql
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
+def test_external_source_columns(project):
+    relation = project.adapter.Relation.create(
+        database=project.database,
+        schema=project.test_schema,
+        identifier="external_without_catalog_table",
+        external="range(3)",
+    )
+    with project.adapter.connection_named("external_columns"):
+        columns = project.adapter.get_columns_in_relation(relation)
+    assert [(column.name, column.dtype) for column in columns] == [("range", "BIGINT")]
+
+
 def test_registered_adapter_and_database(project, database_type):
     assert isinstance(project.adapter, MotherDuckAdapter)
     with project.adapter.connection_named("setup"):

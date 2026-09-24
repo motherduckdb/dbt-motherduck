@@ -36,6 +36,7 @@
 {% endmacro %}
 
 {% macro motherduck__get_columns_in_relation(relation) -%}
+  {% if not relation.external %}
   {# Missing relations return no columns without aborting an open transaction. #}
   {% set exists_sql %}
     select 1 from system.information_schema.tables
@@ -47,6 +48,7 @@
   {% if run_query(exists_sql) | length == 0 %}
     {{ return([]) }}
   {% endif %}
+  {% endif %}
   {# DESCRIBE avoids the global information_schema.columns scan, which forces a full
      catalog load on attached catalogs like DuckLake (issue #762). DuckDB's column_type
      carries precision/scale in the type string, so the null literals are safe. #}
@@ -57,7 +59,7 @@
           cast(null as bigint) as character_maximum_length,
           cast(null as bigint) as numeric_precision,
           cast(null as bigint) as numeric_scale
-      from (describe {{ relation.render() }})
+      from (describe {% if relation.external %}select * from {% endif %}{{ relation.render() }})
   {% endcall %}
   {% set table = load_result('get_columns_in_relation').table %}
   {{ return(sql_convert_columns_in_relation(table)) }}
