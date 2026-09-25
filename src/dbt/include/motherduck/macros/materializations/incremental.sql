@@ -27,7 +27,6 @@
       target_relation, config.get('meta', {}).get('temp_schema_name', 'dbt_temp'),
       adapter.batch_id_for_model(model)
   )) %}
-  {% do create_schema(temp_relation) %}
   {% do adapter.commit() %}
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}

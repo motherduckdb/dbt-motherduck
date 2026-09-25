@@ -65,8 +65,8 @@ def admin_connection(provisioning_profile_data):
 @pytest.fixture(scope="session")
 def temporary_database(admin_connection, database_type):
     @contextmanager
-    def create():
-        name = "dbt_motherduck_test_" + uuid4().hex
+    def create(*, prefix="dbt_motherduck_test_"):
+        name = prefix + uuid4().hex
         options = sql.SQL(" (TYPE DUCKLAKE)" if database_type == "ducklake" else "")
         admin_connection.execute(
             sql.SQL("CREATE DATABASE {}{}").format(sql.Identifier(name), options)
