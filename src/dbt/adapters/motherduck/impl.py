@@ -3,6 +3,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from threading import Lock
 from typing import List, Optional
 from uuid import uuid4
 
@@ -99,6 +100,7 @@ class MotherDuckAdapter(SQLAdapter):
         super().__init__(config, mp_context)
         self._warnings = set()
         self._temp_relation_ids = defaultdict(lambda: uuid4().hex)
+        self._staging_schema_lock = Lock()
 
     @available
     def get_temp_relation_path(
@@ -153,11 +155,13 @@ class MotherDuckAdapter(SQLAdapter):
             self.batch_id_for_model(config.model),
         )
         staging = relation.incorporate(path=path)
-        self.drop_relation(staging)
-        if config.model.get_materialization() == "snapshot":
-            # Prepare before snapshot hooks, so staging setup cannot commit their writes.
-            self.create_schema(staging)
+        # Concurrent CREATE SCHEMA transactions conflict even with IF NOT EXISTS.
+        with self._staging_schema_lock:
             self.commit_if_has_connection()
+            self.create_schema(staging)
+        self.drop_relation(staging)
+        # Prepare before model hooks, so staging setup cannot commit their writes.
+        self.commit_if_has_connection()
         return staging
 
     def post_model_hook(self, config, context):

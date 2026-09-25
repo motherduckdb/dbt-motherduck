@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from dbt.tests.adapter.simple_seed import seeds
 from dbt.tests.adapter.simple_seed.test_seed import SeedUniqueDelimiterTestBase
-from dbt.tests.util import run_dbt
+from dbt.tests.util import run_dbt, update_config_file
 
 
 class TestSeedWithUniqueDelimiter(SeedUniqueDelimiterTestBase):
@@ -68,3 +68,22 @@ class TestSeedTypes:
                 ),
                 (2, None, None, None),
             ]
+
+
+class TestSeedInvalidDelimiter(SeedUniqueDelimiterTestBase):
+    @pytest.fixture(scope="class", autouse=True)
+    def setUp(self, project):
+        create_expected, insert_expected = seeds.seeds__expected_sql.split(";", 1)
+        project.run_sql(create_expected)
+        project.run_sql(insert_expected)
+
+    @pytest.mark.parametrize(
+        "delimiter, message", [(";", "syntax error"), ("", "compilation error")]
+    )
+    def test_invalid_delimiter(self, project, delimiter, message):
+        update_config_file(
+            {"seeds": {"quote_columns": False, "delimiter": delimiter}},
+            "dbt_project.yml",
+        )
+        result = run_dbt(["seed"], expect_pass=False)
+        assert message in result.results[0].message.lower()
