@@ -93,8 +93,8 @@ from range(1, 2) t(i)
         )
         assert "intentional layout failure" in result.results[0].message
         assert project.run_sql(
-            "SELECT count(*) FROM information_schema.tables "
-            f"WHERE table_catalog = '{project.database}' AND table_schema = '{project.test_schema}' "
+            "SELECT count(*) FROM duckdb_tables() "
+            f"WHERE database_name = '{project.database}' AND schema_name = '{project.test_schema}' "
             "AND table_name IN ('layout', 'layout__dbt_tmp')",
             fetch="one",
         ) == (0,)
@@ -185,8 +185,8 @@ select 1 as id, {{ var('value', 1) }} as value
         assert project.run_sql(f"SELECT value FROM {target}", fetch="all") == [(1,)]
         assert (
             project.run_sql(
-                "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_catalog = '{project.database}' AND table_schema = 'dbt_temp' "
+                "SELECT table_name FROM duckdb_tables() "
+                f"WHERE database_name = '{project.database}' AND schema_name = 'dbt_temp' "
                 "AND table_name LIKE 'tracked__%'",
                 fetch="all",
             )
