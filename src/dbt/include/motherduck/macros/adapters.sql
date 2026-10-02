@@ -71,7 +71,7 @@
 {% macro motherduck__list_relations_without_caching(schema_relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     select
-      database: database_name,
+      database: '{{ schema_relation.database | replace("'", "''") }}',
       name: table_name,
       schema: schema_name,
       type: 'table'
@@ -82,7 +82,7 @@
     union all
 
     select
-      database: database_name,
+      database: '{{ schema_relation.database | replace("'", "''") }}',
       name: view_name,
       schema: schema_name,
       type: 'view'
