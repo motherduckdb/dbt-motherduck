@@ -4,8 +4,8 @@ from contextlib import contextmanager
 from multiprocessing import get_context
 from uuid import uuid4
 
+import psycopg
 import pytest
-from dbt.adapters.contracts.connection import Connection
 from dbt.adapters.factory import AdapterContainer
 from dbt.config.profile import Profile
 from dbt.config.renderer import ProfileRenderer
@@ -13,7 +13,6 @@ from dbt.flags import get_flags, set_flags, set_from_args
 from dbt.tests.fixtures.project import adapter as adapter
 from psycopg import sql
 
-from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
 from dbt.adapters.motherduck.credentials import MotherDuckCredentials
 
 
@@ -50,16 +49,22 @@ def database_type(request):
 
 @pytest.fixture(scope="session")
 def admin_connection(provisioning_profile_data):
-    connection = Connection(
-        type="motherduck",
-        name="test_provisioning",
-        credentials=MotherDuckCredentials.from_dict(provisioning_profile_data),
+    credentials = MotherDuckCredentials.from_dict(provisioning_profile_data)
+    connection = psycopg.connect(
+        host=credentials.host,
+        port=credentials.port,
+        user=credentials.user,
+        password=credentials.token,
+        dbname=credentials.database,
+        sslmode="verify-full",
+        sslrootcert=credentials.sslrootcert,
+        connect_timeout=credentials.connect_timeout,
+        autocommit=True,
     )
-    MotherDuckConnectionManager.open(connection)
     try:
-        yield connection.handle
+        yield connection
     finally:
-        MotherDuckConnectionManager.close(connection)
+        connection.close()
 
 
 @pytest.fixture(scope="session")
