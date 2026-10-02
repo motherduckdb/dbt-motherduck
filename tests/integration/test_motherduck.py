@@ -6,11 +6,17 @@ from dbt.tests.util import relation_from_name, run_dbt
 
 
 class TestConcurrentIncrementalStaging:
+    @pytest.fixture
+    def other_database(self, temporary_database):
+        with temporary_database() as name:
+            yield name
+
     @pytest.fixture(scope="class")
     def models(self):
         return {
             f"incremental_{limit}.sql": f"""
-{{{{ config(materialized='incremental', meta={{'temp_schema_name': var('staging_schema')}}) }}}}
+{{{{ config(materialized='incremental', database=var('output_database'),
+            meta={{'temp_schema_name': var('staging_schema')}}) }}}}
 select generate_series as id from generate_series(1, {limit})
 {{% if is_incremental() %}}
 where generate_series > (select coalesce(max(id), 0) from {{{{ this }}}})
@@ -19,41 +25,89 @@ where generate_series > (select coalesce(max(id), 0) from {{{{ this }}}})
             for limit in (50, 100)
         }
 
-    @pytest.mark.parametrize("populate_cache", [True, False])
-    def test_two_models_share_staging_schema(self, project, populate_cache):
-        staging_schema = (
-            "concurrent_staging_cached"
-            if populate_cache
-            else "concurrent_staging_uncached"
-        )
+    @pytest.mark.parametrize("staging_schema", ["dbt_temp", "custom_staging"])
+    def test_two_models_share_staging_schema(
+        self, project, staging_schema, other_database
+    ):
         for iteration in range(3):
             args = [
                 "run",
                 "--threads",
                 "2",
                 "--vars",
-                f"{{staging_schema: {staging_schema}}}",
+                f"{{output_database: {other_database}, staging_schema: {staging_schema}}}",
             ]
-            if not populate_cache:
-                args.append("--no-populate-cache")
             if iteration == 0:
                 args.append("--full-refresh")
             results = run_dbt(args)
             assert len(results) == 2
             for limit in (50, 100):
-                relation = relation_from_name(project.adapter, f"incremental_{limit}")
+                node = next(
+                    result.node
+                    for result in results
+                    if result.node.name == f"incremental_{limit}"
+                )
+                relation = project.adapter.Relation.create(
+                    database=node.database,
+                    schema=node.schema,
+                    identifier=node.alias,
+                )
                 assert project.run_sql(
                     f"select count(*) from {relation}", fetch="one"
                 ) == (limit,)
             assert (
                 project.run_sql(
                     "select table_name from information_schema.tables "
-                    f"where table_catalog = '{project.database}' "
+                    f"where table_catalog = '{other_database}' "
                     f"and table_schema = '{staging_schema}'",
                     fetch="all",
                 )
                 == []
             )
+            assert project.run_sql(
+                "select count(*) from system.information_schema.schemata "
+                f"where catalog_name = '{other_database}' "
+                f"and schema_name = '{staging_schema}'",
+                fetch="one",
+            ) == (1,)
+
+
+class TestStagingSchemaInitialization:
+    @pytest.fixture(scope="class")
+    def other_database(self, temporary_database):
+        with temporary_database() as name:
+            yield name
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "ordinary.sql": """
+{{ config(materialized='table', database=var('output_database')) }}
+select id: 1
+""",
+            "incremental.sql": """
+{{ config(materialized='incremental', database=var('output_database')) }}
+select id: 1
+""",
+        }
+
+    def test_schema_is_created_only_for_staged_materializations(
+        self, project, other_database
+    ):
+        args = ["--vars", f"{{output_database: {other_database}}}"]
+        assert len(run_dbt(["run", "--select", "ordinary", *args])) == 1
+        assert project.run_sql(
+            "select count(*) from system.information_schema.schemata "
+            f"where catalog_name = '{other_database}' and schema_name = 'dbt_temp'",
+            fetch="one",
+        ) == (0,)
+
+        assert len(run_dbt(["run", "--select", "incremental", *args])) == 1
+        assert project.run_sql(
+            "select count(*) from system.information_schema.schemata "
+            f"where catalog_name = '{other_database}' and schema_name = 'dbt_temp'",
+            fetch="one",
+        ) == (1,)
 
 
 @pytest.mark.parametrize(

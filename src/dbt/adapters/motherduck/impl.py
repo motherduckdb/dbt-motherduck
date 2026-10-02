@@ -100,7 +100,10 @@ class MotherDuckAdapter(SQLAdapter):
         super().__init__(config, mp_context)
         self._warnings = set()
         self._temp_relation_ids = defaultdict(lambda: uuid4().hex)
-        self._staging_schema_lock = Lock()
+        # DuckDB / MotherDuck can run into write-write conflicts when running concurrent `create
+        # schema if not exist`. this lock synchronizes adapter-wide creation of the schemas where
+        # incremental models and snapshots build their staging tables.
+        self._temp_relations_lock = Lock()
 
     @available
     def get_temp_relation_path(
@@ -156,7 +159,7 @@ class MotherDuckAdapter(SQLAdapter):
         )
         staging = relation.incorporate(path=path)
         # Concurrent CREATE SCHEMA transactions conflict even with IF NOT EXISTS.
-        with self._staging_schema_lock:
+        with self._temp_relations_lock:
             self.commit_if_has_connection()
             self.create_schema(staging)
         self.drop_relation(staging)
