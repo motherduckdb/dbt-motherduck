@@ -4,9 +4,9 @@
 {% macro motherduck__list_schemas(database) -%}
   {% set sql %}
     select schema_name
-    from system.information_schema.schemata
+    from duckdb_schemas()
     {% if database is not none %}
-    where lower(catalog_name) = '{{ database | lower | replace("'", "''") }}'
+    where lower(database_name) = '{{ database | lower | replace("'", "''") }}'
     {% endif %}
   {% endset %}
   {{ return(run_query(sql)) }}
@@ -15,9 +15,9 @@
 {% macro motherduck__check_schema_exists(information_schema, schema) -%}
   {% set sql -%}
         select count(*)
-        from system.information_schema.schemata
+        from duckdb_schemas()
         where lower(schema_name) = '{{ schema | lower | replace("'", "''") }}'
-        and lower(catalog_name) = '{{ information_schema.database | lower | replace("'", "''") }}'
+        and lower(database_name) = '{{ information_schema.database | lower | replace("'", "''") }}'
   {%- endset %}
   {{ return(run_query(sql)) }}
 {% endmacro %}
@@ -39,19 +39,22 @@
   {% if not relation.external %}
   {# Missing relations return no columns without aborting an open transaction. #}
   {% set exists_sql %}
-    select 1 from system.information_schema.tables
-    where lower(table_catalog) = lower('{{ relation.database | replace("'", "''") }}')
-      and lower(table_schema) = lower('{{ relation.schema | replace("'", "''") }}')
-      and lower(table_name) = lower('{{ relation.identifier | replace("'", "''") }}')
+    select 1
+    from (
+      select database_name, schema_name, relation_name: table_name from duckdb_tables()
+      union all
+      select database_name, schema_name, relation_name: view_name from duckdb_views()
+    ) relations
+    where lower(database_name) = lower('{{ relation.database | replace("'", "''") }}')
+      and lower(schema_name) = lower('{{ relation.schema | replace("'", "''") }}')
+      and lower(relation_name) = lower('{{ relation.identifier | replace("'", "''") }}')
     limit 1
   {% endset %}
   {% if run_query(exists_sql) | length == 0 %}
     {{ return([]) }}
   {% endif %}
   {% endif %}
-  {# DESCRIBE avoids the global information_schema.columns scan, which forces a full
-     catalog load on attached catalogs like DuckLake (issue #762). DuckDB's column_type
-     carries precision/scale in the type string, so the null literals are safe. #}
+  {# DESCRIBE preserves exact type strings without a global catalog scan. #}
   {% call statement('get_columns_in_relation', fetch_result=True, auto_begin=False) %}
       select
           column_name,
@@ -68,17 +71,24 @@
 {% macro motherduck__list_relations_without_caching(schema_relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     select
-      '{{ schema_relation.database | replace("'", "''") }}' as database,
-      table_name as name,
-      table_schema as schema,
-      CASE table_type
-        WHEN 'BASE TABLE' THEN 'table'
-        WHEN 'VIEW' THEN 'view'
-        WHEN 'LOCAL TEMPORARY' THEN 'table'
-        END as type
-    from system.information_schema.tables
-    where lower(table_schema) = '{{ schema_relation.schema | lower | replace("'", "''") }}'
-    and lower(table_catalog) = '{{ schema_relation.database | lower | replace("'", "''") }}'
+      database: database_name,
+      name: table_name,
+      schema: schema_name,
+      type: 'table'
+    from duckdb_tables()
+    where lower(schema_name) = '{{ schema_relation.schema | lower | replace("'", "''") }}'
+      and lower(database_name) = '{{ schema_relation.database | lower | replace("'", "''") }}'
+
+    union all
+
+    select
+      database: database_name,
+      name: view_name,
+      schema: schema_name,
+      type: 'view'
+    from duckdb_views()
+    where lower(schema_name) = '{{ schema_relation.schema | lower | replace("'", "''") }}'
+      and lower(database_name) = '{{ schema_relation.database | lower | replace("'", "''") }}'
   {% endcall %}
   {{ return(load_result('list_relations_without_caching').table) }}
 {% endmacro %}

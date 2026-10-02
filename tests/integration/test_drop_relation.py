@@ -66,9 +66,9 @@ class TestDropRelation:
                 is None
             )
         assert project.run_sql(
-            "select count(*) from information_schema.tables "
-            f"where table_catalog = '{project.database}' "
-            f"and table_schema = '{project.test_schema}' and table_name = 'table_model'",
+            "select count(*) from duckdb_tables() "
+            f"where database_name = '{project.database}' "
+            f"and schema_name = '{project.test_schema}' and table_name = 'table_model'",
             fetch="one",
         ) == (0,)
         if dependency == "view":

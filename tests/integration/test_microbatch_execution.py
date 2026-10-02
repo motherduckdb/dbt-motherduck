@@ -82,8 +82,8 @@ select id, event_time from {{ ref('events') }}
         ]
         assert (
             project.run_sql(
-                "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_catalog = '{project.database}' AND table_schema = 'dbt_temp'",
+                "SELECT table_name FROM duckdb_tables() "
+                f"WHERE database_name = '{project.database}' AND schema_name = 'dbt_temp'",
                 fetch="all",
             )
             == []
@@ -99,8 +99,8 @@ select id, event_time from {{ ref('events') }}
         assert len(result.results[0].batch_results.failed) == 1
         assert (
             project.run_sql(
-                "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_catalog = '{project.database}' AND table_schema = 'dbt_temp'",
+                "SELECT table_name FROM duckdb_tables() "
+                f"WHERE database_name = '{project.database}' AND schema_name = 'dbt_temp'",
                 fetch="all",
             )
             == []

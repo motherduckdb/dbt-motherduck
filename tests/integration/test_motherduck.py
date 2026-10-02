@@ -57,16 +57,16 @@ where generate_series > (select coalesce(max(id), 0) from {{{{ this }}}})
                 ) == (limit,)
             assert (
                 project.run_sql(
-                    "select table_name from information_schema.tables "
-                    f"where table_catalog = '{other_database}' "
-                    f"and table_schema = '{staging_schema}'",
+                    "select table_name from duckdb_tables() "
+                    f"where database_name = '{other_database}' "
+                    f"and schema_name = '{staging_schema}'",
                     fetch="all",
                 )
                 == []
             )
             assert project.run_sql(
-                "select count(*) from system.information_schema.schemata "
-                f"where catalog_name = '{other_database}' "
+                "select count(*) from duckdb_schemas() "
+                f"where database_name = '{other_database}' "
                 f"and schema_name = '{staging_schema}'",
                 fetch="one",
             ) == (1,)
@@ -97,15 +97,15 @@ select id: 1
         args = ["--vars", f"{{output_database: {other_database}}}"]
         assert len(run_dbt(["run", "--select", "ordinary", *args])) == 1
         assert project.run_sql(
-            "select count(*) from system.information_schema.schemata "
-            f"where catalog_name = '{other_database}' and schema_name = 'dbt_temp'",
+            "select count(*) from duckdb_schemas() "
+            f"where database_name = '{other_database}' and schema_name = 'dbt_temp'",
             fetch="one",
         ) == (0,)
 
         assert len(run_dbt(["run", "--select", "incremental", *args])) == 1
         assert project.run_sql(
-            "select count(*) from system.information_schema.schemata "
-            f"where catalog_name = '{other_database}' and schema_name = 'dbt_temp'",
+            "select count(*) from duckdb_schemas() "
+            f"where database_name = '{other_database}' and schema_name = 'dbt_temp'",
             fetch="one",
         ) == (1,)
 

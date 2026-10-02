@@ -158,8 +158,8 @@ class TestIndex:
             backup_tables = project.run_sql(
                 f"""
                 SELECT table_name
-                FROM information_schema.tables
-                WHERE lower(table_schema) = lower('{unique_schema}')
+                FROM duckdb_tables()
+                WHERE lower(schema_name) = lower('{unique_schema}')
                   AND table_name LIKE '%__dbt_backup'
                 """,
                 fetch="all",

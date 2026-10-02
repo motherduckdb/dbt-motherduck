@@ -39,22 +39,22 @@
     select *
     from (
         select
-            t.database_name as table_database,
-            t.schema_name as table_schema,
-            t.table_name as table_name,
-            'BASE TABLE' as table_type,
-            t.comment as table_comment
+            table_database: t.database_name,
+            table_schema: t.schema_name,
+            table_name: t.table_name,
+            table_type: 'BASE TABLE',
+            table_comment: t.comment
         from duckdb_tables() t
         where upper(t.database_name) = upper('{{ information_schema.database | replace("'", "''") }}')
 
         union all
 
         select
-            v.database_name as table_database,
-            v.schema_name as table_schema,
-            v.view_name as table_name,
-            'VIEW' as table_type,
-            v.comment as table_comment
+            table_database: v.database_name,
+            table_schema: v.schema_name,
+            table_name: v.view_name,
+            table_type: 'VIEW',
+            table_comment: v.comment
         from duckdb_views() v
         where upper(v.database_name) = upper('{{ information_schema.database | replace("'", "''") }}')
     ) catalog_tables
@@ -62,16 +62,17 @@
 
 
 {% macro motherduck__get_catalog_columns_sql(information_schema) -%}
+    {# duckdb_columns() exposes column comments, which DESCRIBE omits. #}
     select *
     from (
         select
-            c.database_name as table_database,
-            c.schema_name as table_schema,
-            c.table_name as table_name,
-            c.column_name as column_name,
-            c.column_index as column_index,
-            c.data_type as column_type,
-            c.comment as column_comment
+            table_database: c.database_name,
+            table_schema: c.schema_name,
+            table_name: c.table_name,
+            column_name: c.column_name,
+            column_index: c.column_index,
+            column_type: c.data_type,
+            column_comment: c.comment
         from duckdb_columns() c
         where upper(c.database_name) = upper('{{ information_schema.database | replace("'", "''") }}')
     ) catalog_columns

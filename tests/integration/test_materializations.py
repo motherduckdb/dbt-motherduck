@@ -93,17 +93,17 @@ select 1 as id, {{ var('value', 1) }} as value
         relation = f'"{project.database}"."{project.test_schema}".changes'
         variables = f"strategy: '{strategy}', staging_schema: {staging_schema}"
         staging_sql = (
-            "SELECT table_name FROM information_schema.tables "
-            f"WHERE table_catalog = '{project.database}' "
-            f"AND table_schema = '{staging_schema}' "
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = '{project.database}' "
+            f"AND schema_name = '{staging_schema}' "
             "AND table_name LIKE 'changes__%'"
         )
         run_dbt(["run", "--full-refresh", "--vars", f"{{{variables}}}"])
         run_dbt(["run", "--vars", f"{{{variables}, value: 2}}"])
         assert project.run_sql(staging_sql, fetch="all") == []
         assert project.run_sql(
-            "SELECT schema_name FROM information_schema.schemata "
-            f"WHERE catalog_name = '{project.database}' AND schema_name = '{staging_schema}'",
+            "SELECT schema_name FROM duckdb_schemas() "
+            f"WHERE database_name = '{project.database}' AND schema_name = '{staging_schema}'",
             fetch="all",
         ) == [(staging_schema,)]
         expected = [(1, 1), (1, 2)] if strategy == "append" else [(1, 2)]
@@ -136,9 +136,9 @@ select 1 as id, {{ var('value', 1) }} as value
         )
         assert (
             project.run_sql(
-                "SELECT table_name FROM information_schema.tables "
-                f"WHERE table_catalog = '{project.database}' "
-                "AND table_schema = 'dbt_temp' AND table_name LIKE 'changes__%'",
+                "SELECT table_name FROM duckdb_tables() "
+                f"WHERE database_name = '{project.database}' "
+                "AND schema_name = 'dbt_temp' AND table_name LIKE 'changes__%'",
                 fetch="all",
             )
             == []
