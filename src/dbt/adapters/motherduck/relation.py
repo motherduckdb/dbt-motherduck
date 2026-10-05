@@ -5,6 +5,7 @@ from string import Template
 from typing import Optional
 
 from dbt.adapters.base.relation import BaseRelation
+from dbt.exceptions import ParsingError
 from dbt_common.exceptions import DbtRuntimeError
 
 
@@ -15,6 +16,31 @@ class MotherDuckRelation(BaseRelation):
 
     @classmethod
     def create_from(cls, quoting, relation_config, **kwargs):
+        # dbt constructs relation names after merging model configs during parsing.
+        if relation_config.resource_type in ("model", "snapshot"):
+            misplaced = [
+                key
+                for key in (
+                    "parameters",
+                    "merge_update_condition",
+                    "merge_insert_condition",
+                    "merge_on_using_columns",
+                    "merge_update_set_expressions",
+                    "merge_clauses",
+                    "merge_returning_columns",
+                    "partitioned_by",
+                    "partition_by",
+                    "sorted_by",
+                    "sort_by",
+                )
+                if key in relation_config.config
+            ]
+            if misplaced:
+                raise ParsingError(
+                    "These configuration options must be set under config.meta in dbt-motherduck: "
+                    + ", ".join(misplaced),
+                    node=relation_config,
+                )
         meta = relation_config.config.get("meta") or {}
         source_meta = getattr(relation_config, "meta", None) or {}
         if "plugin" in meta or "plugin" in source_meta:
