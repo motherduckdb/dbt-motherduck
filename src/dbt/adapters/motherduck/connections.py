@@ -7,6 +7,7 @@ from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
 from dbt_common.exceptions import DbtDatabaseError
+from sqlparse import lexer
 
 
 class MotherDuckConnectionManager(SQLConnectionManager):
@@ -98,7 +99,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 token not in sqlparse.tokens.Whitespace
                 and token not in sqlparse.tokens.Comment
                 and value != ";"
-                for token, value in sqlparse.lexer.tokenize(statement)
+                for token, value in lexer.tokenize(statement)
             )
         ]
         cursor = None

@@ -16,8 +16,12 @@ class MotherDuckRelation(BaseRelation):
 
     @classmethod
     def create_from(cls, quoting, relation_config, **kwargs):
+        config = relation_config.config
         # dbt constructs relation names after merging model configs during parsing.
-        if relation_config.resource_type in ("model", "snapshot"):
+        if config is not None and relation_config.resource_type in (
+            "model",
+            "snapshot",
+        ):
             misplaced = [
                 key
                 for key in (
@@ -33,7 +37,7 @@ class MotherDuckRelation(BaseRelation):
                     "sorted_by",
                     "sort_by",
                 )
-                if key in relation_config.config
+                if key in config
             ]
             if misplaced:
                 raise ParsingError(
@@ -41,12 +45,13 @@ class MotherDuckRelation(BaseRelation):
                     + ", ".join(misplaced),
                     node=relation_config,
                 )
-        meta = relation_config.config.get("meta") or {}
+        meta = (config.get("meta") or {}) if config is not None else {}
         source_meta = getattr(relation_config, "meta", None) or {}
         if "plugin" in meta or "plugin" in source_meta:
             raise DbtRuntimeError("Local plugins are not supported by dbt-motherduck")
         if relation_config.resource_type == "source":
-            options = {**source_meta, **meta, **relation_config.config.extra}
+            extra = config.extra if config is not None else {}
+            options = {**source_meta, **meta, **extra}
             if "plugin" in options:
                 raise DbtRuntimeError(
                     "Local plugins are not supported by dbt-motherduck"
