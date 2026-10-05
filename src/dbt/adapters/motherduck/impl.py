@@ -2,7 +2,7 @@
 # acdab5dfc85715572bbf43fcf2b318a5ed1bfa16, dbt/adapters/duckdb/impl.py.
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Lock
 from typing import List, Optional
 from uuid import uuid4
@@ -43,7 +43,7 @@ class MotherDuckIndexConfig(dbtClassMixin):
         # the index will only be created on every other run. See
         # https://github.com/dbt-labs/dbt-core/issues/1945#issuecomment-576714925
         # for an explanation.
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         inputs = self.columns + [
             relation.render(),
             str(self.unique),
