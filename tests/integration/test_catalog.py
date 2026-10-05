@@ -66,3 +66,80 @@ select 1::integer as id, 1.5::decimal(18, 2) as amount, 'x'::varchar as label,
             "label": "VARCHAR",
             "nested": "STRUCT(fname VARCHAR, age INTEGER)",
         }
+
+
+class TestCatalogRelations:
+    @pytest.fixture(scope="class")
+    def other_database(self, temporary_database):
+        with temporary_database() as name:
+            yield name
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "alpha_model.sql": """
+{{ config(materialized='table') }}
+select id: 1, note: 'main'
+""",
+            "beta_model.sql": "select id: 2, score: 3.14",
+        }
+
+    def test_get_catalog_relations(self, project, other_database):
+        assert len(run_dbt(["run"])) == 2
+        adapter = project.adapter
+        shadow = adapter.Relation.create(
+            database=other_database,
+            schema=project.test_schema,
+            identifier="alpha_model",
+            type="table",
+        )
+        with get_connection(adapter):
+            adapter.execute(f"create schema {shadow.without_identifier()}")
+            adapter.execute(
+                f"create table {shadow} as "
+                "select shadow_id: 999, shadow_note: 'other database', shadow_flag: true"
+            )
+            _, databases = adapter.execute(
+                "select database_name from duckdb_databases()", fetch=True
+            )
+            assert {project.database, other_database} <= {
+                row[0] for row in databases.rows
+            }
+
+            information_schema = adapter.Relation.create(
+                database=project.database.upper(), schema="information_schema"
+            )
+            specific = adapter.Relation.create(
+                database=project.database.upper(),
+                schema=project.test_schema.upper(),
+                identifier="ALPHA_MODEL",
+            )
+            schema = specific.incorporate(path={"identifier": None})
+            alpha_columns = [
+                (project.database, project.test_schema, "alpha_model", "id"),
+                (project.database, project.test_schema, "alpha_model", "note"),
+            ]
+            beta_columns = [
+                (project.database, project.test_schema, "beta_model", "id"),
+                (project.database, project.test_schema, "beta_model", "score"),
+            ]
+            for relation, expected in (
+                (specific, alpha_columns),
+                (schema, alpha_columns + beta_columns),
+            ):
+                catalog = adapter.execute_macro(
+                    "get_catalog_relations",
+                    kwargs={
+                        "information_schema": information_schema,
+                        "relations": [relation],
+                    },
+                )
+                assert [
+                    (
+                        row["table_database"],
+                        row["table_schema"],
+                        row["table_name"],
+                        row["column_name"],
+                    )
+                    for row in catalog.rows
+                ] == expected
