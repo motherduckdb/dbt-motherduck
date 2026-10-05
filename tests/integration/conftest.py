@@ -70,9 +70,12 @@ def admin_connection(provisioning_profile_data):
 @pytest.fixture(scope="session")
 def temporary_database(admin_connection, database_type):
     @contextmanager
-    def create(*, prefix="dbt_motherduck_test_"):
+    def create(*, prefix="dbt_motherduck_test_", kind=None):
+        kind = database_type if kind is None else kind
+        if kind not in ("native", "ducklake"):
+            raise ValueError(f"Unsupported test database type: {kind}")
         name = prefix + uuid4().hex
-        options = sql.SQL(" (TYPE DUCKLAKE)" if database_type == "ducklake" else "")
+        options = sql.SQL(" (TYPE DUCKLAKE)" if kind == "ducklake" else "")
         admin_connection.execute(
             sql.SQL("CREATE DATABASE {}{}").format(sql.Identifier(name), options)
         )
