@@ -1,8 +1,9 @@
 import os
+import re
 from argparse import Namespace
 from contextlib import contextmanager
+from itertools import count
 from multiprocessing import get_context
-from uuid import uuid4
 
 import psycopg
 import pytest
@@ -14,6 +15,32 @@ from dbt.tests.fixtures.project import adapter as adapter
 from psycopg import sql
 
 from dbt.adapters.motherduck.credentials import MotherDuckCredentials
+
+# Database names travel over the PostgreSQL wire protocol, so keep the generated
+# name well inside the 63-byte identifier limit that protocol assumes.
+RUN_ID_MAX_LENGTH = 36
+
+
+def sanitize_run_id(raw):
+    # Keep the tail: callers put the varying part (run number, matrix leg) last.
+    cleaned = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    return cleaned[-RUN_ID_MAX_LENGTH:].strip("_")
+
+
+@pytest.fixture(scope="session")
+def test_run_id():
+    # Each xdist worker runs its own session and restarts the counter below, so the
+    # worker has to be part of the name or workers would replace each other's databases.
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    run_id = sanitize_run_id(f"{os.environ.get('MOTHERDUCK_TEST_RUN_ID', '')}-{worker}")
+    if not run_id:
+        pytest.fail(
+            "Set MOTHERDUCK_TEST_RUN_ID to a value unique to this run. It names the "
+            "disposable databases, so concurrent runs sharing a value collide, and "
+            "databases left behind by an interrupted run are traceable to it.",
+            pytrace=False,
+        )
+    return run_id
 
 
 @pytest.fixture(scope="session")
@@ -34,11 +61,12 @@ def provisioning_profile_data():
     return {
         "type": "motherduck",
         "host": os.environ.get("MOTHERDUCK_HOST", "pg.us-east-1-aws.motherduck.com"),
-        "database": os.environ["MOTHERDUCK_DATABASE"],
+        "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
         "schema": "main",
         "token": token,
         "sslrootcert": os.environ.get("MOTHERDUCK_SSLROOTCERT", "system"),
         "threads": 2,
+        "connect_timeout": 30,
     }
 
 
@@ -69,16 +97,20 @@ def admin_connection(provisioning_profile_data):
 
 
 @pytest.fixture(scope="session")
-def temporary_database(admin_connection, database_type):
+def temporary_database(admin_connection, database_type, test_run_id):
+    counter = count()
+
     @contextmanager
     def create(*, prefix="dbt_motherduck_test_", kind=None):
         kind = database_type if kind is None else kind
         if kind not in ("native", "ducklake"):
             raise ValueError(f"Unsupported test database type: {kind}")
-        name = prefix + uuid4().hex
+        name = f"{prefix}{test_run_id}_{next(counter)}"
         options = sql.SQL(" (TYPE DUCKLAKE)" if kind == "ducklake" else "")
         admin_connection.execute(
-            sql.SQL("CREATE DATABASE {}{}").format(sql.Identifier(name), options)
+            sql.SQL("CREATE OR REPLACE DATABASE {}{}").format(
+                sql.Identifier(name), options
+            )
         )
         try:
             admin_connection.execute(

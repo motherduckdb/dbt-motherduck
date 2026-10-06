@@ -292,9 +292,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             attached_databases = cursor.execute(
                 "select alias from md_attached_databases()"
             ).fetchall()
-            attached_database_names = set(
-                row[0].casefold() for row in attached_databases
-            )
+            attached_database_names = {row[0].casefold() for row in attached_databases}
             pending_databases = requested_databases.keys() - attached_database_names
             if not pending_databases:
                 return

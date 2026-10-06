@@ -19,7 +19,7 @@ class TestUniqueKey(BaseIncrementalUniqueKey):
     def test__bad_unique_key_list(self, project):
         """expect compilation error from unique key not being a column"""
 
-        (status, exc) = self.fail_to_build_inc_missing_unique_key_column(
+        (status, _exc) = self.fail_to_build_inc_missing_unique_key_column(
             incremental_model_name="not_found_unique_key_list"
         )
 

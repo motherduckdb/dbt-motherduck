@@ -1,5 +1,6 @@
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 from queue import Queue
@@ -400,16 +401,18 @@ def test_nontransactional_batch_failure_preserves_committed_prefix(connection_ad
             "CREATE TABLE main.nontransactional_probe (id INTEGER)"
         )
     try:
-        with connection_adapter.connection_named("nontransactional_batch"):
-            with pytest.raises(
+        with (
+            connection_adapter.connection_named("nontransactional_batch"),
+            pytest.raises(
                 DbtDatabaseError, match="intentional nontransactional failure"
-            ):
-                connection_adapter.execute(
-                    "INSERT INTO main.nontransactional_probe VALUES (1); "
-                    "SELECT error('intentional nontransactional failure'); "
-                    "INSERT INTO main.nontransactional_probe VALUES (2)",
-                    auto_begin=False,
-                )
+            ),
+        ):
+            connection_adapter.execute(
+                "INSERT INTO main.nontransactional_probe VALUES (1); "
+                "SELECT error('intentional nontransactional failure'); "
+                "INSERT INTO main.nontransactional_probe VALUES (2)",
+                auto_begin=False,
+            )
         with connection_adapter.connection_named("nontransactional_verify"):
             _, table = connection_adapter.execute(
                 "SELECT id FROM main.nontransactional_probe", fetch=True
@@ -755,9 +758,7 @@ def _close_query_socket(query_socket, future):
     try:
         if not future.done():
             # Unblock libpq before executor shutdown if cancellation failed.
-            try:
+            with suppress(OSError):
                 query_socket.shutdown(SHUT_RDWR)
-            except OSError:
-                pass
     finally:
         query_socket.close()

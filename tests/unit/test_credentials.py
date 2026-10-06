@@ -44,7 +44,12 @@ def test_defaults():
     ],
 )
 def test_invalid_credentials(changes):
-    values = dict(host="example.com", token="secret", database="db", schema="main")
+    values = {
+        "host": "example.com",
+        "token": "secret",
+        "database": "db",
+        "schema": "main",
+    }
     with pytest.raises(DbtRuntimeError):
         MotherDuckCredentials(**(values | changes))
 

@@ -73,7 +73,8 @@ class TestConfiguredAttachments:
         adapter.config.credentials.attach_databases.append(missing)
         with adapter.connection_named("missing_attachment"):
             with pytest.raises(FailedToConnectError, match=missing):
-                adapter.connections.get_thread_connection().handle
+                # Accessing .handle is what resolves the LazyHandle and connects.
+                _ = adapter.connections.get_thread_connection().handle
             connection = adapter.connections.get_thread_connection()
             assert connection.state == ConnectionState.FAIL
             assert connection.handle is None
