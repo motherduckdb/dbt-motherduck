@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Not cancel-in-progress: a killed integration run skips the fixture teardown
+  # that drops its generated database.
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - name: Install lint dependencies
+        run: uv sync --locked --only-group lint
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+      - name: Check lint rules
+        run: uv run --no-sync ruff check .
+
+  unit:
+    name: unit (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      # Non-editable so the adapter is importable the way dbt discovers plugins:
+      # it globs dbt/adapters/*/__version__.py under the installed namespace.
+      - name: Install project and test dependencies
+        run: uv sync --locked --no-editable
+      - name: Report versions
+        run: |
+          uv run --no-sync dbt --version
+          uv pip list
+      - name: Run unit tests
+        run: uv run --no-sync pytest -m unit
+
+  integration:
+    name: integration (${{ matrix.database-type }})
+    needs: unit
+    runs-on: ubuntu-latest
+    # The native leg measured 1h20m against the live endpoint; leave headroom.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        database-type: [native, ducklake]
+    env:
+      DBT_ENV_SECRET_MOTHERDUCK_TOKEN: ${{ secrets.DBT_ENV_SECRET_MOTHERDUCK_TOKEN }}
+      MOTHERDUCK_INITIAL_DATABASE: ${{ vars.MOTHERDUCK_INITIAL_DATABASE }}
+      # The fixtures default to sslrootcert=system, which resolves to the CA path
+      # compiled into psycopg's bundled OpenSSL and does not exist on every platform.
+      MOTHERDUCK_SSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
+      # Names the disposable databases. Includes the matrix leg because both legs
+      # of a run share a run number.
+      MOTHERDUCK_TEST_RUN_ID: >-
+        ${{ github.ref_name }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.database-type }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      # The fixtures skip when the token is unset; in CI that must fail loudly instead.
+      - name: Require endpoint credentials
+        run: |
+          [ -n "$DBT_ENV_SECRET_MOTHERDUCK_TOKEN" ] \
+            || { echo "::error::secret DBT_ENV_SECRET_MOTHERDUCK_TOKEN is not set"; exit 1; }
+          [ -n "$MOTHERDUCK_INITIAL_DATABASE" ] \
+            || { echo "::error::variable MOTHERDUCK_INITIAL_DATABASE is not set"; exit 1; }
+      - name: Install project and test dependencies
+        run: uv sync --locked --no-editable
+      - name: Report versions
+        run: uv run --no-sync dbt --version
+      - name: Run integration tests
+        run: uv run --no-sync pytest -m integration -ra -n 8 --database-type ${{ matrix.database-type }}

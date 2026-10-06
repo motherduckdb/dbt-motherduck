@@ -125,21 +125,19 @@ def test_release_rolls_back_unfinished_work(connection_adapter, fail):
             if fail
             else nullcontext()
         )
-        with expected_error:
-            with adapter.connection_named("unfinished_model"):
-                adapter.execute(
-                    "INSERT INTO main.release_probe VALUES (1)",
-                    auto_begin=True,
-                )
-                connection = adapter.connections.get_thread_connection()
-                handle = connection.handle
-                assert connection.transaction_open
-                assert (
-                    handle.info.transaction_status
-                    == psycopg.pq.TransactionStatus.INTRANS
-                )
-                if fail:
-                    raise CompilationError("intentional compilation failure")
+        with expected_error, adapter.connection_named("unfinished_model"):
+            adapter.execute(
+                "INSERT INTO main.release_probe VALUES (1)",
+                auto_begin=True,
+            )
+            connection = adapter.connections.get_thread_connection()
+            handle = connection.handle
+            assert connection.transaction_open
+            assert (
+                handle.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+            )
+            if fail:
+                raise CompilationError("intentional compilation failure")
         assert not handle.closed
         assert not connection.transaction_open
         assert handle.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
@@ -169,24 +167,26 @@ def test_release_rejects_raw_transaction_mismatches(
     with adapter.connection_named("transaction_mismatch_setup"):
         adapter.execute("CREATE TABLE main.transaction_mismatch_probe (id INTEGER)")
     try:
-        with pytest.raises(DbtInternalError) as raised:
-            with adapter.connection_named("raw_transaction"):
-                if transaction_sql == "BEGIN":
-                    adapter.execute(transaction_sql)
-                adapter.execute(
-                    "INSERT INTO main.transaction_mismatch_probe VALUES (1)",
-                    auto_begin=transaction_sql != "BEGIN",
-                )
-                connection = adapter.connections.get_thread_connection()
-                handle = connection.handle
-                if transaction_sql != "BEGIN":
-                    adapter.execute(transaction_sql)
-                assert connection.transaction_open is (transaction_sql != "BEGIN")
-                assert handle.info.transaction_status == (
-                    psycopg.pq.TransactionStatus.INTRANS
-                    if transaction_sql == "BEGIN"
-                    else psycopg.pq.TransactionStatus.IDLE
-                )
+        with (
+            pytest.raises(DbtInternalError) as raised,
+            adapter.connection_named("raw_transaction"),
+        ):
+            if transaction_sql == "BEGIN":
+                adapter.execute(transaction_sql)
+            adapter.execute(
+                "INSERT INTO main.transaction_mismatch_probe VALUES (1)",
+                auto_begin=transaction_sql != "BEGIN",
+            )
+            connection = adapter.connections.get_thread_connection()
+            handle = connection.handle
+            if transaction_sql != "BEGIN":
+                adapter.execute(transaction_sql)
+            assert connection.transaction_open is (transaction_sql != "BEGIN")
+            assert handle.info.transaction_status == (
+                psycopg.pq.TransactionStatus.INTRANS
+                if transaction_sql == "BEGIN"
+                else psycopg.pq.TransactionStatus.IDLE
+            )
         assert advice in str(raised.value)
         assert "support@motherduck.com" in str(raised.value)
         assert handle.closed
@@ -271,14 +271,16 @@ def test_release_discards_session_when_rollback_fails(connection_adapter, monkey
         return original_rollback(handle)
 
     try:
-        with pytest.raises(DbtDatabaseError, match="intentional rollback failure"):
-            with adapter.connection_named("rollback_failure"):
-                adapter.execute(
-                    "INSERT INTO main.rollback_failure_probe VALUES (1)",
-                    auto_begin=True,
-                )
-                failed_handle = adapter.connections.get_thread_connection().handle
-                monkeypatch.setattr(psycopg.Connection, "rollback", fail_rollback)
+        with (
+            pytest.raises(DbtDatabaseError, match="intentional rollback failure"),
+            adapter.connection_named("rollback_failure"),
+        ):
+            adapter.execute(
+                "INSERT INTO main.rollback_failure_probe VALUES (1)",
+                auto_begin=True,
+            )
+            failed_handle = adapter.connections.get_thread_connection().handle
+            monkeypatch.setattr(psycopg.Connection, "rollback", fail_rollback)
         assert failed_handle.closed
         assert adapter.connections.get_if_exists() is None
         with adapter.connection_named("rollback_failure_recovered"):

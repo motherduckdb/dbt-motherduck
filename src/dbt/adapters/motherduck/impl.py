@@ -2,7 +2,6 @@
 # acdab5dfc85715572bbf43fcf2b318a5ed1bfa16, dbt/adapters/duckdb/impl.py.
 from collections import defaultdict
 from threading import Lock
-from typing import List, Optional
 from uuid import uuid4
 
 from dbt.adapters.base.impl import ConstraintSupport
@@ -35,16 +34,16 @@ class MotherDuckAdapter(SQLAdapter):
     Relation = MotherDuckRelation
     AdapterSpecificConfigs = MotherDuckConfig
 
-    CONSTRAINT_SUPPORT = {
-        kind: ConstraintSupport.ENFORCED
-        for kind in (
+    CONSTRAINT_SUPPORT = dict.fromkeys(
+        (
             ConstraintType.check,
             ConstraintType.not_null,
             ConstraintType.unique,
             ConstraintType.primary_key,
             ConstraintType.foreign_key,
-        )
-    }
+        ),
+        ConstraintSupport.ENFORCED,
+    )
 
     _capabilities = CapabilityDict(
         {
@@ -160,7 +159,7 @@ class MotherDuckAdapter(SQLAdapter):
         return bool(table.rows and table.rows[0][0])
 
     @available.parse(lambda *a, **k: [])
-    def get_column_schema_from_query(self, sql: str) -> List[MotherDuckColumn]:
+    def get_column_schema_from_query(self, sql: str) -> list[MotherDuckColumn]:
         """Get a list of the column names and data types from the given sql.
 
         :param str sql: The sql to execute.
@@ -204,9 +203,7 @@ class MotherDuckAdapter(SQLAdapter):
         return first_sql
 
     @classmethod
-    def render_column_constraint(
-        cls, constraint: ColumnLevelConstraint
-    ) -> Optional[str]:
+    def render_column_constraint(cls, constraint: ColumnLevelConstraint) -> str | None:
         """Render the given constraint as DDL text. Should be overriden by adapters which need custom constraint
         rendering."""
         if constraint.type == ConstraintType.foreign_key:
@@ -221,7 +218,7 @@ class MotherDuckAdapter(SQLAdapter):
             return super().render_column_constraint(constraint)
 
     @classmethod
-    def render_model_constraint(cls, constraint: ModelLevelConstraint) -> Optional[str]:
+    def render_model_constraint(cls, constraint: ModelLevelConstraint) -> str | None:
         if (
             constraint.type == ConstraintType.foreign_key
             and constraint.to

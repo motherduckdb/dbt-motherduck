@@ -137,11 +137,11 @@ class TestQuotedForeignKeys:
                 database=node.database, schema=node.schema, identifier=node.alias
             )
             assert project.run_sql(f"select * from {relation}", fetch="all") == [(1,)]
-            with get_connection(project.adapter):
-                with pytest.raises(
-                    DbtDatabaseError, match="(?i)foreign key|constraint"
-                ):
-                    project.adapter.execute(f"insert into {relation} values (999)")
+            with (
+                get_connection(project.adapter),
+                pytest.raises(DbtDatabaseError, match=r"(?i)foreign key|constraint"),
+            ):
+                project.adapter.execute(f"insert into {relation} values (999)")
             assert project.run_sql(f"select * from {relation}", fetch="all") == [(1,)]
 
     @pytest.mark.parametrize("level", ["column", "model"])
@@ -175,7 +175,9 @@ class TestQuotedForeignKeys:
         ).as_string()
         project.run_sql(f"create table {child} ({columns})")
         project.run_sql(f"insert into {child} values (1)")
-        with get_connection(project.adapter):
-            with pytest.raises(DbtDatabaseError, match="(?i)foreign key|constraint"):
-                project.adapter.execute(f"insert into {child} values (999)")
+        with (
+            get_connection(project.adapter),
+            pytest.raises(DbtDatabaseError, match=r"(?i)foreign key|constraint"),
+        ):
+            project.adapter.execute(f"insert into {child} values (999)")
         assert project.run_sql(f"select * from {child}", fetch="all") == [(1,)]
