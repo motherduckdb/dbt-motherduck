@@ -2,7 +2,6 @@
 # dbt/adapters/duckdb/relation.py and utils.py (source configuration).
 from dataclasses import dataclass
 from string import Template
-from typing import Optional
 
 from dbt.adapters.base.relation import BaseRelation
 from dbt.exceptions import ParsingError
@@ -12,7 +11,7 @@ from dbt_common.exceptions import DbtRuntimeError
 @dataclass(frozen=True, eq=False, repr=False)
 class MotherDuckRelation(BaseRelation):
     require_alias: bool = False
-    external: Optional[str] = None
+    external: str | None = None
 
     @classmethod
     def create_from(cls, quoting, relation_config, **kwargs):

@@ -29,7 +29,7 @@ select id: 1, value: {{ var('value', 1) }}
         for flags in ([], ["--full-refresh"]):
             with pytest.raises(
                 ParsingError,
-                match="must be set under config.meta in dbt-motherduck: merge_update_condition",
+                match=r"must be set under config.meta in dbt-motherduck: merge_update_condition",
             ):
                 run_dbt(
                     [

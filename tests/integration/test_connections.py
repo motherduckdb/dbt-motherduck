@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 from queue import Queue
@@ -284,7 +285,7 @@ def test_cancel_running_query(connection_adapter):
             connection = connection_adapter.connections.get_thread_connection()
             handle = connection.handle
             connections.put((connection, fromfd(handle.fileno(), AF_INET, SOCK_STREAM)))
-            with pytest.raises(DbtDatabaseError, match="(?i)interrupt|cancel"):
+            with pytest.raises(DbtDatabaseError, match=r"(?i)interrupt|cancel"):
                 connection_adapter.execute(
                     "SELECT sum(sin(i)) FROM range(1000000000) AS t(i)", fetch=True
                 )
@@ -307,10 +308,8 @@ def test_cancel_running_query(connection_adapter):
             try:
                 if not future.done():
                     # Unblock libpq before executor shutdown if cancellation failed.
-                    try:
+                    with suppress(OSError):
                         query_socket.shutdown(SHUT_RDWR)
-                    except OSError:
-                        pass
             finally:
                 query_socket.close()
     with connection_adapter.connection_named("after_cancel"):

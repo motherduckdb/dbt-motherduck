@@ -142,7 +142,7 @@ class TestIndex:
 
     def test_incremental(self, project, unique_schema):
         for additional_argument in [[], [], ["--full-refresh"]]:
-            results = run_dbt(["run", "--models", "incremental"] + additional_argument)
+            results = run_dbt(["run", "--models", "incremental", *additional_argument])
             assert len(results) == 1
 
             indexes = self.get_indexes("incremental", project, unique_schema)
@@ -170,7 +170,7 @@ class TestIndex:
 
     def test_seed(self, project, unique_schema):
         for additional_argument in [[], [], ["--full-refresh"]]:
-            results = run_dbt(["seed"] + additional_argument)
+            results = run_dbt(["seed", *additional_argument])
             assert len(results) == 1
 
             indexes = self.get_indexes("seed", project, unique_schema)

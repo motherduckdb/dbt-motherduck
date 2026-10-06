@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
-from typing import List, Optional
+from typing import Optional
 from uuid import uuid4
 
 from dbt.adapters.base import AdapterConfig, BaseRelation
@@ -35,7 +35,7 @@ from dbt.adapters.motherduck.relation import MotherDuckRelation
 
 @dataclass
 class MotherDuckIndexConfig(dbtClassMixin):
-    columns: List[str]
+    columns: list[str]
     unique: bool = False
 
     def render(self, relation):
@@ -44,7 +44,8 @@ class MotherDuckIndexConfig(dbtClassMixin):
         # https://github.com/dbt-labs/dbt-core/issues/1945#issuecomment-576714925
         # for an explanation.
         now = datetime.now(timezone.utc).isoformat()
-        inputs = self.columns + [
+        inputs = [
+            *self.columns,
             relation.render(),
             str(self.unique),
             now,
@@ -60,14 +61,14 @@ class MotherDuckIndexConfig(dbtClassMixin):
             cls.validate(raw_index)
             return cls.from_dict(raw_index)
         except ValidationError as exc:
-            raise IndexConfigError(exc)
-        except TypeError:
-            raise IndexConfigNotDictError(raw_index)
+            raise IndexConfigError(exc) from exc
+        except TypeError as exc:
+            raise IndexConfigNotDictError(raw_index) from exc
 
 
 @dataclass
 class MotherDuckConfig(AdapterConfig):
-    indexes: Optional[List[MotherDuckIndexConfig]] = None
+    indexes: list[MotherDuckIndexConfig] | None = None
 
 
 class MotherDuckAdapter(SQLAdapter):
@@ -76,16 +77,16 @@ class MotherDuckAdapter(SQLAdapter):
     Relation = MotherDuckRelation
     AdapterSpecificConfigs = MotherDuckConfig
 
-    CONSTRAINT_SUPPORT = {
-        kind: ConstraintSupport.ENFORCED
-        for kind in (
+    CONSTRAINT_SUPPORT = dict.fromkeys(
+        (
             ConstraintType.check,
             ConstraintType.not_null,
             ConstraintType.unique,
             ConstraintType.primary_key,
             ConstraintType.foreign_key,
-        )
-    }
+        ),
+        ConstraintSupport.ENFORCED,
+    )
 
     _capabilities = CapabilityDict(
         {
@@ -244,7 +245,7 @@ class MotherDuckAdapter(SQLAdapter):
         return first_sql
 
     @available.parse(lambda *a, **k: [])
-    def get_column_schema_from_query(self, sql: str) -> List[MotherDuckColumn]:
+    def get_column_schema_from_query(self, sql: str) -> list[MotherDuckColumn]:
         """Get a list of the column names and data types from the given sql.
 
         :param str sql: The sql to execute.
@@ -262,9 +263,7 @@ class MotherDuckAdapter(SQLAdapter):
         return flattened_columns
 
     @classmethod
-    def render_column_constraint(
-        cls, constraint: ColumnLevelConstraint
-    ) -> Optional[str]:
+    def render_column_constraint(cls, constraint: ColumnLevelConstraint) -> str | None:
         """Render the given constraint as DDL text. Should be overriden by adapters which need custom constraint
         rendering."""
         if constraint.type == ConstraintType.foreign_key:
@@ -279,7 +278,7 @@ class MotherDuckAdapter(SQLAdapter):
             return super().render_column_constraint(constraint)
 
     @classmethod
-    def render_model_constraint(cls, constraint: ModelLevelConstraint) -> Optional[str]:
+    def render_model_constraint(cls, constraint: ModelLevelConstraint) -> str | None:
         if (
             constraint.type == ConstraintType.foreign_key
             and constraint.to
@@ -309,7 +308,7 @@ class MotherDuckAdapter(SQLAdapter):
         self,
         relation_a: BaseRelation,
         relation_b: BaseRelation,
-        column_names: Optional[List[str]] = None,
+        column_names: list[str] | None = None,
         except_operator: str = "EXCEPT",
     ) -> str:
         """Generate SQL for a query that returns a single row with a two
@@ -318,12 +317,12 @@ class MotherDuckAdapter(SQLAdapter):
 
         This method only really exists for test reasons.
         """
-        names: List[str]
+        names: list[str]
         if column_names is None:
             columns = self.get_columns_in_relation(relation_a)
-            names = sorted((self.quote(c.name) for c in columns))
+            names = sorted(self.quote(c.name) for c in columns)
         else:
-            names = sorted((self.quote(n) for n in column_names))
+            names = sorted(self.quote(n) for n in column_names)
         columns_csv = ", ".join(names)
 
         sql = COLUMNS_EQUAL_SQL.format(

@@ -2,14 +2,13 @@
 # dbt/adapters/duckdb/column.py.
 import re
 from dataclasses import dataclass, field
-from typing import List
 
 from dbt.adapters.base.column import Column
 
 
 @dataclass
 class MotherDuckColumn(Column):
-    fields: List["MotherDuckColumn"] = field(default_factory=list)
+    fields: list["MotherDuckColumn"] = field(default_factory=list)
 
     def __post_init__(self):
         if self.is_struct():
@@ -88,11 +87,11 @@ class MotherDuckColumn(Column):
     def is_struct(self) -> bool:
         return self.dtype.lower().startswith("struct")
 
-    def flatten(self) -> List["MotherDuckColumn"]:
+    def flatten(self) -> list["MotherDuckColumn"]:
         if not self.is_struct():
             return [self]
 
-        flat_columns: List["MotherDuckColumn"] = []
+        flat_columns: list[MotherDuckColumn] = []
         for column_field in self.fields:
             if column_field.is_struct():
                 # Recursively flatten nested structs

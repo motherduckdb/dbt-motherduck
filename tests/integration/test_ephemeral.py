@@ -29,7 +29,7 @@ class TestEphemeralMulti(BaseEphemeralMulti):
         check_relations_equal(project.adapter, ["seed", "double_dependent"])
         check_relations_equal(project.adapter, ["seed", "super_dependent"])
         assert os.path.exists("./target/run/test/models/double_dependent.sql")
-        with open("./target/run/test/models/double_dependent.sql", "r") as fp:
+        with open("./target/run/test/models/double_dependent.sql") as fp:
             sql_file = fp.read()
 
         expected_sql = (
@@ -66,7 +66,7 @@ class TestEphemeralNested(BaseEphemeral):
         results = run_dbt(["run"])
         assert len(results) == 2
         assert os.path.exists("./target/run/test/models/root_view.sql")
-        with open("./target/run/test/models/root_view.sql", "r") as fp:
+        with open("./target/run/test/models/root_view.sql") as fp:
             sql_file = fp.read()
 
         expected_sql = (
