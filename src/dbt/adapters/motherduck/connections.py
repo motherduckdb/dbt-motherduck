@@ -6,20 +6,70 @@ from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
-from dbt_common.exceptions import DbtDatabaseError
+from dbt_common.exceptions import DbtDatabaseError, DbtInternalError
+from psycopg import sql as pg_sql
 from sqlparse import lexer
 
 
 class MotherDuckConnectionManager(SQLConnectionManager):
     TYPE = "motherduck"
 
-    @classmethod
-    def open(cls, connection):
+    def __init__(self, profile, mp_context):
+        super().__init__(profile, mp_context)
+        # dbt-motherduck connects to MotherDuck on single attach mode
+        # https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/attach-modes/
+        # this callback is set by the MotherDuckAdapter (which owns the connection) and
+        # returns which databases are needed to run the dbt project.
+        self.databases_needed_callback = self._uninitialized_databases_needed
+
+    @staticmethod
+    def _uninitialized_databases_needed():
+        raise DbtInternalError(
+            "The adapter must initialize databases_needed_callback before opening a connection. "
+            "This code should never be reached. If you encounter this error, "
+            "contact MotherDuck support at support@motherduck.com."
+        )
+
+    @staticmethod
+    def _attach_databases(handle, databases):
+        requested_databases = {name.casefold(): name for name in databases}
+        if not requested_databases:
+            return
+        with handle.cursor() as cursor:
+            attached_databases = cursor.execute(
+                "select alias from md_attached_databases()"
+            ).fetchall()
+            attached_database_names = set(
+                row[0].casefold() for row in attached_databases
+            )
+            pending_databases = requested_databases.keys() - attached_database_names
+            if not pending_databases:
+                return
+            available_databases = cursor.execute(
+                "select alias from md_all_databases()"
+            ).fetchall()
+            database_aliases = {
+                row[0].casefold(): row[0] for row in available_databases
+            }
+            for key in sorted(pending_databases):
+                if key not in database_aliases:
+                    raise psycopg.OperationalError(
+                        f"MotherDuck database '{requested_databases[key]}' does not exist or is not accessible"
+                    )
+                cursor.execute(
+                    pg_sql.SQL("attach {}").format(
+                        pg_sql.Literal(f"md:{database_aliases[key]}")
+                    )
+                )
+
+    def open(self, connection):
         if connection.state == ConnectionState.OPEN:
             return connection
         credentials = connection.credentials
+        databases = self.databases_needed_callback()
+        handle = None
         try:
-            connection.handle = psycopg.connect(
+            handle = psycopg.connect(
                 host=credentials.host,
                 port=credentials.port,
                 user=credentials.user,
@@ -28,14 +78,19 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 sslmode="verify-full",
                 sslrootcert=credentials.sslrootcert,
                 connect_timeout=credentials.connect_timeout,
+                options="-c attach_mode=single",
                 # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
                 autocommit=True,
             )
+            self._attach_databases(handle, databases)
         except psycopg.Error as exc:
+            if handle is not None:
+                handle.close()
             connection.handle = None
             connection.state = ConnectionState.FAIL
             message = str(exc).replace(credentials.token, "[REDACTED]")
             raise FailedToConnectError(message) from None
+        connection.handle = handle
         connection.state = ConnectionState.OPEN
         return connection
 
