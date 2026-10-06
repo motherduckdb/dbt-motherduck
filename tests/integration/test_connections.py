@@ -27,6 +27,9 @@ def test_profile_and_connection(connection_adapter, test_database):
         handle = connection.handle
         assert isinstance(handle, psycopg.Connection)
         assert handle.autocommit
+        assert handle.execute(
+            "select current_setting('motherduck_attach_mode')"
+        ).fetchone() == ("single",)
         parameters = handle.info.get_parameters()
         assert handle.info.host == credentials.host
         assert handle.info.port == credentials.port

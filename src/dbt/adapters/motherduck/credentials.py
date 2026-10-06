@@ -12,6 +12,7 @@ class MotherDuckCredentials(Credentials):
     user: str = "postgres"
     sslrootcert: str = "system"
     connect_timeout: int = 10
+    attach_databases: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         for name in ("host", "token", "database", "schema", "user", "sslrootcert"):
@@ -30,6 +31,17 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError("port must be an integer between 1 and 65535")
         if type(self.connect_timeout) is not int or self.connect_timeout < 1:
             raise DbtRuntimeError("connect_timeout must be a positive integer")
+        if not isinstance(self.attach_databases, list) or any(
+            not isinstance(name, str)
+            or not name.strip()
+            or "\x00" in name
+            or "=" in name
+            or name.startswith(("md:", "postgres://", "postgresql://"))
+            for name in self.attach_databases
+        ):
+            raise DbtRuntimeError(
+                "attach_databases must be a list of non-empty database names, not connection strings"
+            )
 
     @property
     def type(self):
@@ -48,4 +60,5 @@ class MotherDuckCredentials(Credentials):
             "schema",
             "sslrootcert",
             "connect_timeout",
+            "attach_databases",
         )

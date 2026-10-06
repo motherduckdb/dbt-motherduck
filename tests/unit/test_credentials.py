@@ -12,6 +12,7 @@ def test_defaults():
     assert credentials.user == "postgres"
     assert credentials.sslrootcert == "system"
     assert credentials.connect_timeout == 10
+    assert credentials.attach_databases == []
 
 
 @pytest.mark.parametrize(
@@ -29,6 +30,14 @@ def test_defaults():
         {"port": 65536},
         {"port": True},
         {"connect_timeout": 0},
+        {"attach_databases": "other"},
+        {"attach_databases": None},
+        {"attach_databases": [""]},
+        {"attach_databases": [" "]},
+        {"attach_databases": [1]},
+        {"attach_databases": ["other\x00"]},
+        {"attach_databases": ["md:other"]},
+        {"attach_databases": ["host=other-server"]},
     ],
 )
 def test_invalid_credentials(changes):
@@ -43,3 +52,17 @@ def test_required_credentials(missing):
     del values[missing]
     with pytest.raises(TypeError):
         MotherDuckCredentials(**values)
+
+
+def test_attachment_names_round_trip():
+    credentials = MotherDuckCredentials(
+        host="example.com",
+        token="secret",
+        database="db",
+        schema="main",
+        attach_databases=["other", "MixedCase"],
+    )
+    assert MotherDuckCredentials.from_dict(credentials.to_dict()).attach_databases == [
+        "other",
+        "MixedCase",
+    ]

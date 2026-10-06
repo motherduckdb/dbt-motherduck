@@ -25,17 +25,20 @@ select id: 1, ds: 2
         }
 
     def test_is_ducklake_for_non_default_database(
-        self, project, database_type, other_database
+        self, connection_adapter, database_type, other_database
     ):
-        adapter = project.adapter
+        adapter = connection_adapter
+        adapter.config.credentials.attach_databases = [other_database]
         primary = adapter.Relation.create(
-            database=project.database, schema="main", identifier="type_probe"
+            database=adapter.config.credentials.database,
+            schema="main",
+            identifier="type_probe",
         )
         target = primary.incorporate(path={"database": other_database})
         with get_connection(adapter):
             adapter.execute(f"create table {target} as select id: 1")
             _, current = adapter.execute("select current_database()", fetch=True)
-            assert current.rows[0][0] == project.database
+            assert current.rows[0][0] == primary.database
             assert adapter.is_ducklake(primary) is (database_type == "ducklake")
             assert adapter.is_ducklake(target) is (database_type == "native")
 

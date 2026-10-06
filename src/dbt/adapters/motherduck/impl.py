@@ -98,12 +98,41 @@ class MotherDuckAdapter(SQLAdapter):
 
     def __init__(self, config, mp_context):
         super().__init__(config, mp_context)
+        # the ConnectionManager uses this callback to ask for a list of databases to attach
+        self.connections.databases_needed_callback = self._get_databases_needed
         self._warnings = set()
         self._temp_relation_ids = defaultdict(lambda: uuid4().hex)
         # DuckDB / MotherDuck can run into write-write conflicts when running concurrent `create
         # schema if not exist`. this lock synchronizes adapter-wide creation of the schemas where
         # incremental models and snapshots build their staging tables.
         self._temp_relations_lock = Lock()
+
+    def _get_databases_needed(self):
+        credentials = self.config.credentials
+        databases = {
+            name.casefold(): name
+            for name in (credentials.database, *credentials.attach_databases)
+        }
+        manifest = self.get_macro_resolver()
+        for collection in ("nodes", "sources", "functions"):
+            for node in getattr(manifest, collection, {}).values():
+                if getattr(node, "is_ephemeral", False):
+                    continue
+                if collection == "nodes" and not node.is_relational:
+                    continue
+                if collection == "sources":
+                    relation = self.Relation.create_from(self.config, node)
+                    if relation.external:
+                        continue
+                if node.database:
+                    databases.setdefault(node.database.casefold(), node.database)
+                for field in ("defer_relation", "defer_function"):
+                    deferred = getattr(node, field, None)
+                    if deferred is not None and deferred.database:
+                        databases.setdefault(
+                            deferred.database.casefold(), deferred.database
+                        )
+        return tuple(databases[key] for key in sorted(databases))
 
     @available
     def get_temp_relation_path(

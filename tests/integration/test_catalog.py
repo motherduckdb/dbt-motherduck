@@ -75,6 +75,10 @@ class TestCatalogRelations:
             yield name
 
     @pytest.fixture(scope="class")
+    def dbt_profile_target(self, dbt_profile_target, other_database):
+        return {**dbt_profile_target, "attach_databases": [other_database]}
+
+    @pytest.fixture(scope="class")
     def models(self):
         return {
             "alpha_model.sql": """
