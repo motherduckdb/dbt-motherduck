@@ -145,7 +145,11 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         retryable_exceptions=(),
         retry_limit=1,
     ):
-        # The endpoint binds a whole request before executing CREATE statements in it.
+        # we cannot send multiple queries as a single string because the endpoint tries to
+        # prepare and bind all statements before executing any.
+        # e.g. if we send "create table t; insert into table t;", the insert statement
+        # fails to prepare because the table doesn't exist yet.
+        # we send the statements as a list instead of as a concatenated string.
         statements = sqlparse.split(sql) if bindings is None else [sql]
         statements = [
             statement
