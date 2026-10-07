@@ -1,12 +1,17 @@
 from contextlib import contextmanager
+from time import perf_counter
 
 import psycopg
 import sqlparse
 from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
+from dbt.adapters.events.types import ConnectionUsed, SQLQuery, SQLQueryStatus
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
+from dbt_common.events.contextvars import get_node_info
+from dbt_common.events.functions import fire_event
 from dbt_common.exceptions import DbtDatabaseError, DbtInternalError, DbtRuntimeError
+from dbt_common.utils import cast_to_str
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
@@ -149,7 +154,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # prepare and bind all statements before executing any.
         # e.g. if we send "create table t; insert into table t;", the insert statement
         # fails to prepare because the table doesn't exist yet.
-        # we send the statements one-by-one
+        # we send the statements in postgres pipelines or one-by-one
 
         # filter-out non-executable statements, but preserve all comments
         # dbt-snowflake and dbt-redshift do drop trailing comments
@@ -197,6 +202,18 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 retry_limit=retry_limit,
             )
 
+        connection = self.get_thread_connection()
+        if (
+            len(statements) > 1
+            # pipeline errors cannot use dbt's per-statement retry path
+            and not retryable_exceptions
+            # only use pipelines if we're inside a transaction or we are opening one
+            and (connection.transaction_open or auto_begin)
+        ):
+            if not connection.transaction_open:
+                self.begin()
+            return self._add_pipeline_queries(connection, statements, abridge_sql_log)
+
         cursor = None
         for statement in statements:
             if cursor is not None:
@@ -210,6 +227,53 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 retry_limit=retry_limit,
             )
         return connection, cursor
+
+    def _add_pipeline_queries(self, connection, statements, abridge_sql_log):
+        cursors = []
+        try:
+            with self.exception_handler("\n".join(statements)):
+                started_timer = perf_counter()
+                with connection.handle.pipeline():
+                    for statement in statements:
+                        fire_event(
+                            ConnectionUsed(
+                                conn_type=self.TYPE,
+                                conn_name=cast_to_str(connection.name),
+                                node_info=get_node_info(),
+                            )
+                        )
+                        fire_event(
+                            SQLQuery(
+                                conn_name=cast_to_str(connection.name),
+                                sql=f"{statement[:512]}..."
+                                if abridge_sql_log
+                                else statement,
+                                node_info=get_node_info(),
+                            )
+                        )
+                        cursor = connection.handle.cursor()
+                        cursors.append(cursor)
+                        cursor.execute(
+                            self._without_statement_terminator(statement), prepare=False
+                        )
+                # the client sends/received the whole pipeline at once.
+                # pg_endpoint could in principle return metadata with runtime per statement.
+                elapsed = perf_counter() - started_timer
+                for cursor in cursors:
+                    response = self.get_response(cursor)
+                    fire_event(
+                        SQLQueryStatus(
+                            status=str(response),
+                            elapsed=elapsed,
+                            node_info=get_node_info(),
+                            query_id=response.query_id,
+                        )
+                    )
+                cursor = cursors.pop()
+                return connection, cursor
+        finally:
+            for cursor in cursors:
+                cursor.close()
 
     @staticmethod
     def _without_statement_terminator(statement):

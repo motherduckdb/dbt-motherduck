@@ -150,6 +150,161 @@ def test_dependent_statements_and_rollback(connection_adapter):
         connection_adapter.execute("DROP TABLE main.statement_probe")
 
 
+@pytest.mark.parametrize("finish", ["commit", "rollback", "release"])
+def test_pipeline_transaction_lifecycle(connection_adapter, finish):
+    with connection_adapter.connection_named("pipeline_setup"):
+        connection_adapter.execute("CREATE TABLE main.pipeline_probe (id INTEGER)")
+    try:
+        with connection_adapter.connection_named("pipeline"):
+            response, table = connection_adapter.execute(
+                "INSERT INTO main.pipeline_probe VALUES (1), (2), (3); "
+                "SELECT id FROM main.pipeline_probe ORDER BY id; /* trailing; */",
+                auto_begin=True,
+                fetch=True,
+                limit=2,
+            )
+            connection = connection_adapter.connections.get_thread_connection()
+            handle = connection.handle
+            assert response.code == "SELECT"
+            assert response.rows_affected == 3
+            assert [row[0] for row in table.rows] == [1, 2]
+            assert connection.transaction_open
+            assert (
+                handle.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+            )
+            assert handle.pgconn.pipeline_status == psycopg.pq.PipelineStatus.OFF
+            if finish == "commit":
+                connection_adapter.commit_if_has_connection()
+            elif finish == "rollback":
+                connection_adapter.connections.rollback_if_open()
+            if finish != "release":
+                assert not connection.transaction_open
+                assert (
+                    handle.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+                )
+        assert handle.closed
+        with connection_adapter.connection_named("pipeline_verify"):
+            _, table = connection_adapter.execute(
+                "SELECT count(*) FROM main.pipeline_probe", fetch=True
+            )
+            assert table.rows[0][0] == (3 if finish == "commit" else 0)
+    finally:
+        with connection_adapter.connection_named("pipeline_cleanup"):
+            connection_adapter.execute("DROP TABLE main.pipeline_probe")
+
+
+@pytest.mark.parametrize("position", [0, 1, 2], ids=["first", "middle", "last"])
+@pytest.mark.parametrize(
+    "failing_sql, message",
+    [
+        ("SELECT FROM", "(?i)syntax"),
+        (
+            "SELECT * FROM intentionally_missing_pipeline_table",
+            "intentionally_missing_pipeline_table",
+        ),
+        (
+            "SELECT error(cast(i AS VARCHAR) || ':intentional pipeline failure') FROM range(1) AS t(i)",
+            "0:intentional pipeline failure",
+        ),
+    ],
+    ids=["syntax", "binding", "runtime"],
+)
+def test_pipeline_errors_preserve_cause_and_rollback(
+    connection_adapter, position, failing_sql, message
+):
+    with connection_adapter.connection_named("pipeline_error_setup"):
+        connection_adapter.execute(
+            "CREATE TABLE main.pipeline_error_probe (id INTEGER)"
+        )
+    try:
+        with connection_adapter.connection_named("pipeline_error"):
+            connection_adapter.execute("SELECT 1", auto_begin=True)
+            connection = connection_adapter.connections.get_thread_connection()
+            handle = connection.handle
+            statements = [
+                "INSERT INTO main.pipeline_error_probe VALUES (1)",
+                "INSERT INTO main.pipeline_error_probe VALUES (2)",
+            ]
+            statements.insert(position, failing_sql)
+            with pytest.raises(DbtDatabaseError, match=message) as error:
+                connection_adapter.execute("; ".join(statements))
+            assert connection_adapter.config.credentials.token not in str(error.value)
+            assert error.value.__suppress_context__
+            assert handle.closed
+            assert not connection.transaction_open
+            assert connection.state == ConnectionState.CLOSED
+        with connection_adapter.connection_named("pipeline_error_verify"):
+            _, table = connection_adapter.execute(
+                "SELECT count(*) FROM main.pipeline_error_probe", fetch=True
+            )
+            assert table.rows[0][0] == 0
+            assert (
+                connection_adapter.connections.get_thread_connection().handle
+                is not handle
+            )
+    finally:
+        with connection_adapter.connection_named("pipeline_error_cleanup"):
+            connection_adapter.execute("DROP TABLE main.pipeline_error_probe")
+
+
+def test_nontransactional_batch_failure_preserves_committed_prefix(connection_adapter):
+    with connection_adapter.connection_named("nontransactional_setup"):
+        connection_adapter.execute(
+            "CREATE TABLE main.nontransactional_probe (id INTEGER)"
+        )
+    try:
+        with connection_adapter.connection_named("nontransactional_batch"):
+            with pytest.raises(
+                DbtDatabaseError, match="intentional nontransactional failure"
+            ):
+                connection_adapter.execute(
+                    "INSERT INTO main.nontransactional_probe VALUES (1); "
+                    "SELECT error('intentional nontransactional failure'); "
+                    "INSERT INTO main.nontransactional_probe VALUES (2)",
+                    auto_begin=False,
+                )
+        with connection_adapter.connection_named("nontransactional_verify"):
+            _, table = connection_adapter.execute(
+                "SELECT id FROM main.nontransactional_probe", fetch=True
+            )
+            assert [row[0] for row in table.rows] == [1]
+    finally:
+        with connection_adapter.connection_named("nontransactional_cleanup"):
+            connection_adapter.execute("DROP TABLE main.nontransactional_probe")
+
+
+def test_pipeline_many_results_and_final_dml_response(connection_adapter):
+    with connection_adapter.connection_named("many_results"):
+        connection_adapter.execute("CREATE TABLE main.many_results_probe (id INTEGER)")
+        try:
+            statements = [
+                f"SELECT id: i + {number * 1000} FROM range(128) AS t(i)"
+                for number in range(50)
+            ]
+            statements.append(
+                "INSERT INTO main.many_results_probe SELECT * FROM range(17)"
+            )
+            response, table = connection_adapter.execute(
+                "; ".join(statements), auto_begin=True
+            )
+            assert response.code == "INSERT"
+            assert response.rows_affected == 17
+            assert len(table.rows) == 0
+            response, table = connection_adapter.execute(
+                "SELECT 42; SELECT id FROM main.many_results_probe ORDER BY id",
+                fetch=True,
+                limit=3,
+            )
+            assert response.code == "SELECT"
+            assert response.rows_affected == 17
+            assert [row[0] for row in table.rows] == [0, 1, 2]
+            connection_adapter.commit_if_has_connection()
+        finally:
+            with connection_adapter.connection_named("many_results_cleanup"):
+                connection_adapter.connections.rollback_if_open()
+                connection_adapter.execute("DROP TABLE main.many_results_probe")
+
+
 def test_query_failure_discards_connection(connection_adapter):
     with connection_adapter.connection_named("query_failure"):
         connection_adapter.execute("SELECT 1", auto_begin=True)
@@ -299,9 +454,20 @@ def test_concurrent_session_isolation(connection_adapter):
 
 
 @pytest.mark.parametrize("operation", ["cancel", "cancel_open", "disconnect"])
-def test_interrupted_queries_rollback_and_reconnect(connection_adapter, operation):
+@pytest.mark.parametrize("position", ["single", "first", "middle", "last"])
+def test_interrupted_queries_rollback_and_reconnect(
+    connection_adapter, operation, position
+):
     connections = Queue()
     slow_query = "SELECT sum(sin(i)) FROM range(1000000000) AS t(i)"
+    statements = [
+        "INSERT INTO main.interrupted_probe VALUES (1)",
+        "INSERT INTO main.interrupted_probe VALUES (2)",
+    ]
+    if position == "single":
+        statements = [slow_query]
+    else:
+        statements.insert(["first", "middle", "last"].index(position), slow_query)
 
     def run_query():
         with connection_adapter.connection_named("interrupt_target"):
@@ -317,13 +483,13 @@ def test_interrupted_queries_rollback_and_reconnect(connection_adapter, operatio
                 else "(?i)interrupt|cancel"
             )
             with pytest.raises(DbtDatabaseError, match=message):
-                connection_adapter.execute(slow_query, fetch=True)
+                connection_adapter.execute("; ".join(statements), fetch=True)
             assert handle.closed
             assert not connection.transaction_open
             assert connection.state == ConnectionState.CLOSED
         with connection_adapter.connection_named("interrupt_recovered"):
             _, table = connection_adapter.execute(
-                "SELECT 43", auto_begin=True, fetch=True
+                "SELECT 42; SELECT 43", auto_begin=True, fetch=True
             )
             assert table.rows[0][0] == 43
             replacement = connection_adapter.connections.get_thread_connection().handle
@@ -368,6 +534,55 @@ def test_interrupted_queries_rollback_and_reconnect(connection_adapter, operatio
                 assert handles[0] is not handles[1]
         finally:
             connection_adapter.execute("DROP TABLE main.interrupted_probe")
+
+
+def test_cancel_open_interrupts_multiple_workers(connection_adapter):
+    connections = Queue()
+
+    def run_query(name):
+        with connection_adapter.connection_named(name):
+            connection_adapter.execute("SELECT 1", auto_begin=True)
+            connection = connection_adapter.connections.get_thread_connection()
+            handle = connection.handle
+            connections.put(
+                (name, handle, fromfd(handle.fileno(), AF_INET, SOCK_STREAM))
+            )
+            with pytest.raises(DbtDatabaseError, match="(?i)interrupt|cancel"):
+                connection_adapter.execute(
+                    "SELECT 42; SELECT sum(sin(i)) FROM range(1000000000) AS t(i); SELECT 43"
+                )
+            assert handle.closed
+            assert not connection.transaction_open
+            assert connection.state == ConnectionState.CLOSED
+
+    with connection_adapter.connection_named("multi_cancel_observer"):
+        connection_adapter.execute("SELECT 1")
+        observer = connection_adapter.connections.get_thread_connection().handle
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                name: executor.submit(run_query, name)
+                for name in ("worker_0", "worker_1")
+            }
+            sockets = []
+            try:
+                handles = []
+                for _ in futures:
+                    name, handle, query_socket = connections.get(timeout=30)
+                    sockets.append((query_socket, futures[name]))
+                    handles.append(handle)
+                for handle, (_, future) in zip(handles, sockets):
+                    _wait_for_active(handle, future)
+                assert handles[0] is not handles[1]
+                assert set(connection_adapter.connections.cancel_open()) == set(futures)
+                for future in futures.values():
+                    future.result(timeout=30)
+            finally:
+                for query_socket, future in sockets:
+                    _close_query_socket(query_socket, future)
+        _, table = connection_adapter.execute("SELECT 42", fetch=True)
+        assert table.rows[0][0] == 42
+        assert connection_adapter.connections.get_thread_connection().handle is observer
+        assert not observer.closed
 
 
 def test_cancel_idle_connection_remains_usable(connection_adapter):
