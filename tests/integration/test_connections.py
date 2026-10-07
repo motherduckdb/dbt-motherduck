@@ -14,6 +14,28 @@ from dbt_common.exceptions import DbtDatabaseError
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
+def _wait_for_active(handle, future):
+    deadline = monotonic() + 10
+    while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
+        if future.done():
+            future.result()
+            pytest.fail("Query finished before interruption")
+        assert monotonic() < deadline, "Query did not become active"
+        sleep(0.01)
+
+
+def _close_query_socket(query_socket, future):
+    try:
+        if not future.done():
+            # Unblock libpq before executor shutdown if cancellation failed.
+            try:
+                query_socket.shutdown(SHUT_RDWR)
+            except OSError:
+                pass
+    finally:
+        query_socket.close()
+
+
 def test_profile_and_connection(connection_adapter, test_database):
     assert isinstance(connection_adapter, MotherDuckAdapter)
     assert connection_adapter.config.threads == 2
@@ -276,46 +298,86 @@ def test_concurrent_session_isolation(connection_adapter):
             connection_adapter.execute("DROP TABLE main.isolation_probe")
 
 
-def test_cancel_running_query(connection_adapter):
+@pytest.mark.parametrize("operation", ["cancel", "cancel_open", "disconnect"])
+def test_interrupted_queries_rollback_and_reconnect(connection_adapter, operation):
     connections = Queue()
+    slow_query = "SELECT sum(sin(i)) FROM range(1000000000) AS t(i)"
 
     def run_query():
-        with connection_adapter.connection_named("cancel_target"):
+        with connection_adapter.connection_named("interrupt_target"):
+            connection_adapter.execute(
+                "INSERT INTO main.interrupted_probe VALUES (-1)", auto_begin=True
+            )
             connection = connection_adapter.connections.get_thread_connection()
             handle = connection.handle
             connections.put((connection, fromfd(handle.fileno(), AF_INET, SOCK_STREAM)))
-            with pytest.raises(DbtDatabaseError, match="(?i)interrupt|cancel"):
-                connection_adapter.execute(
-                    "SELECT sum(sin(i)) FROM range(1000000000) AS t(i)", fetch=True
-                )
+            message = (
+                "(?i)closed|connection|EOF|SSL|receive"
+                if operation == "disconnect"
+                else "(?i)interrupt|cancel"
+            )
+            with pytest.raises(DbtDatabaseError, match=message):
+                connection_adapter.execute(slow_query, fetch=True)
             assert handle.closed
             assert not connection.transaction_open
             assert connection.state == ConnectionState.CLOSED
+        with connection_adapter.connection_named("interrupt_recovered"):
+            _, table = connection_adapter.execute(
+                "SELECT 43", auto_begin=True, fetch=True
+            )
+            assert table.rows[0][0] == 43
+            replacement = connection_adapter.connections.get_thread_connection().handle
+            assert replacement is not handle
+            connection_adapter.commit_if_has_connection()
+        assert replacement.closed
+        return handle
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(run_query)
-        connection, query_socket = connections.get(timeout=30)
-        handle = connection.handle
+    with connection_adapter.connection_named("interrupt_observer"):
+        connection_adapter.execute("CREATE TABLE main.interrupted_probe (id INTEGER)")
+        observer = connection_adapter.connections.get_thread_connection().handle
         try:
-            deadline = monotonic() + 10
-            while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
-                assert monotonic() < deadline, "Query did not become active"
-                sleep(0.01)
-            connection_adapter.connections.cancel(connection)
-            future.result(timeout=30)
-        finally:
-            try:
-                if not future.done():
-                    # Unblock libpq before executor shutdown if cancellation failed.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                handles = []
+                for _ in range(2):
+                    future = executor.submit(run_query)
+                    connection, query_socket = connections.get(timeout=30)
+                    handle = connection.handle
                     try:
-                        query_socket.shutdown(SHUT_RDWR)
-                    except OSError:
-                        pass
-            finally:
-                query_socket.close()
-    with connection_adapter.connection_named("after_cancel"):
-        _, table = connection_adapter.execute("SELECT 42", fetch=True)
-        assert table.rows[0][0] == 42
-        assert (
-            connection_adapter.connections.get_thread_connection().handle is not handle
-        )
+                        _wait_for_active(handle, future)
+                        if operation == "cancel":
+                            connection_adapter.connections.cancel(connection)
+                        elif operation == "cancel_open":
+                            assert (
+                                "interrupt_target"
+                                in connection_adapter.connections.cancel_open()
+                            )
+                        else:
+                            query_socket.shutdown(SHUT_RDWR)
+                        handles.append(future.result(timeout=30))
+                    finally:
+                        _close_query_socket(query_socket, future)
+                    _, table = connection_adapter.execute(
+                        "SELECT count(*) FROM main.interrupted_probe", fetch=True
+                    )
+                    assert table.rows[0][0] == 0
+                    assert (
+                        connection_adapter.connections.get_thread_connection().handle
+                        is observer
+                    )
+                    assert not observer.closed
+                assert handles[0] is not handles[1]
+        finally:
+            connection_adapter.execute("DROP TABLE main.interrupted_probe")
+
+
+def test_cancel_idle_connection_remains_usable(connection_adapter):
+    with connection_adapter.connection_named("idle_cancel"):
+        connection_adapter.execute("SELECT 1")
+        connection = connection_adapter.connections.get_thread_connection()
+        handle = connection.handle
+        for _ in range(3):
+            connection_adapter.connections.cancel(connection)
+            _, table = connection_adapter.execute("SELECT 42", fetch=True)
+            assert table.rows[0][0] == 42
+            assert connection.handle is handle
+            assert not handle.closed

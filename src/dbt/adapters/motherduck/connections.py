@@ -6,7 +6,7 @@ from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
-from dbt_common.exceptions import DbtDatabaseError, DbtInternalError
+from dbt_common.exceptions import DbtDatabaseError, DbtInternalError, DbtRuntimeError
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
@@ -149,31 +149,81 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # prepare and bind all statements before executing any.
         # e.g. if we send "create table t; insert into table t;", the insert statement
         # fails to prepare because the table doesn't exist yet.
-        # we send the statements as a list instead of as a concatenated string.
-        statements = sqlparse.split(sql) if bindings is None else [sql]
-        statements = [
-            statement
-            for statement in statements
-            if any(
+        # we send the statements one-by-one
+
+        # filter-out non-executable statements, but preserve all comments
+        # dbt-snowflake and dbt-redshift do drop trailing comments
+        statements = []
+        leading_comments = []
+        for statement in sqlparse.split(sql):
+            tokens = list(lexer.tokenize(statement))
+            has_sql = any(
                 token not in sqlparse.tokens.Whitespace
                 and token not in sqlparse.tokens.Comment
                 and value != ";"
-                for token, value in lexer.tokenize(statement)
+                for token, value in tokens
             )
-        ]
+            if has_sql:
+                statements.append("\n".join([*leading_comments, statement]))
+                leading_comments.clear()
+            else:
+                comments = "".join(value for _, value in tokens if value != ";").strip()
+                if not comments:
+                    continue
+                if statements:
+                    statements[-1] += "\n" + comments
+                else:
+                    leading_comments.append(comments)
+
+        if bindings is not None and len(statements) > 1:
+            # duckdb accepts them, pg_endpoint doesn't
+            raise DbtRuntimeError(
+                "dbt-motherduck does not support multiple SQL statements with bindings "
+                "in one call. Execute each statement separately with its own bindings."
+            )
+
+        if not statements:
+            # if after splitting there's no executable statements, we send it to the engine.
+            # alternatively, we could raise an error like other adapters do (redshift,
+            # snowflake), but dbt-duckdb (and dbt-postgres) send them to the engines so
+            # let's just do that to avoid thinking about edge cases of people potentially
+            # producing non-executable statements on macros or hooks.
+            return super().add_query(
+                sql=sql,
+                auto_begin=auto_begin,
+                bindings=bindings,
+                abridge_sql_log=abridge_sql_log,
+                retryable_exceptions=retryable_exceptions,
+                retry_limit=retry_limit,
+            )
+
         cursor = None
-        for statement in statements or [sql]:
+        for statement in statements:
             if cursor is not None:
                 cursor.close()
             connection, cursor = super().add_query(
-                statement,
-                auto_begin,
-                bindings,
-                abridge_sql_log,
-                retryable_exceptions,
-                retry_limit,
+                sql=self._without_statement_terminator(statement),
+                auto_begin=auto_begin,
+                bindings=bindings,
+                abridge_sql_log=abridge_sql_log,
+                retryable_exceptions=retryable_exceptions,
+                retry_limit=retry_limit,
             )
         return connection, cursor
+
+    @staticmethod
+    def _without_statement_terminator(statement):
+        # e.g `select a; --comment` => `select a --comment`
+        # pg_endpoint treats comments after a terminator as a statement
+        tokens = list(lexer.tokenize(statement))
+        for index in range(len(tokens) - 1, -1, -1):
+            token, value = tokens[index]
+            if token in sqlparse.tokens.Whitespace or token in sqlparse.tokens.Comment:
+                continue
+            if value == ";":
+                tokens[index] = (token, "")
+            break
+        return "".join(value for _, value in tokens)
 
     def cancel(self, connection):
         connection.handle.cancel_safe()
