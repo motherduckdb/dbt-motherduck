@@ -4,7 +4,7 @@ from time import perf_counter
 import psycopg
 import sqlparse
 from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
-from dbt.adapters.events.types import ConnectionUsed, SQLQuery, SQLQueryStatus
+from dbt.adapters.events.types import ConnectionUsed, Rollback, SQLQuery, SQLQueryStatus
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
@@ -98,6 +98,86 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         connection.handle = handle
         connection.state = ConnectionState.OPEN
         return connection
+
+    def release(self):
+        # default .release() just .close()s the connections,
+        # we want to reuse them within a dbt thread.
+        # .set_connection_name() will find open connections per thread if they are not closed
+        connection = self.get_if_exists()
+
+        # only execute if connection is open
+        if connection is None:
+            return
+        if connection.state == ConnectionState.FAIL:
+            self.clear_thread_connection()
+            return
+        if connection.state != ConnectionState.OPEN:
+            return
+
+        try:
+            handle = connection.handle
+            status = handle.info.transaction_status
+            # something closed the transaction without updating dbt transaction state
+            if handle.closed or status == psycopg.pq.TransactionStatus.UNKNOWN:
+                connection.transaction_open = False
+                self.close(connection)
+                return
+
+            if status == psycopg.pq.TransactionStatus.ACTIVE:
+                raise DbtInternalError(
+                    "The MotherDuck connection is not ready for release: "
+                    "a query is still in progress. "
+                    "This should never happen. Please contact MotherDuck support at support@motherduck.com."
+                )
+            if handle.pgconn.pipeline_status != psycopg.pq.PipelineStatus.OFF:
+                raise DbtInternalError(
+                    "The MotherDuck connection is not ready for release: "
+                    "pipeline mode is still enabled. "
+                    "This should never happen. Please contact MotherDuck support at support@motherduck.com."
+                )
+
+            if (
+                connection.transaction_open
+                and status == psycopg.pq.TransactionStatus.IDLE
+            ):
+                raise DbtInternalError(
+                    "dbt expects an open transaction, but MotherDuck reports no open transaction. "
+                    "A custom macro or hook may have run COMMIT or ROLLBACK directly. "
+                    "Use adapter.commit() for commits and let dbt handle rollback on failure. "
+                    "If this persists, contact MotherDuck support at support@motherduck.com."
+                )
+            if not connection.transaction_open and status in {
+                psycopg.pq.TransactionStatus.INTRANS,
+                psycopg.pq.TransactionStatus.INERROR,
+            }:
+                raise DbtInternalError(
+                    "MotherDuck reports an open transaction that dbt is not tracking. "
+                    "A custom macro or hook may have run BEGIN directly. "
+                    "Use a statement block with auto_begin=True instead of raw BEGIN "
+                    "so dbt can track the transaction. "
+                    "If this persists, contact MotherDuck support at support@motherduck.com."
+                )
+
+            if connection.transaction_open:
+                with self.exception_handler("ROLLBACK"):
+                    fire_event(
+                        Rollback(
+                            conn_name=cast_to_str(connection.name),
+                            node_info=get_node_info(),
+                        )
+                    )
+                    # dbt's rollback helper suppresses errors, which is unsafe for reuse.
+                    handle.rollback()
+            connection.transaction_open = False
+            if handle.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                self.close(connection)
+        except Exception:
+            connection.transaction_open = False
+            try:
+                self.close(connection)
+            finally:
+                self.clear_thread_connection()
+            raise
 
     @contextmanager
     def exception_handler(self, sql):
