@@ -62,6 +62,9 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      # Both legs share one duckling, and the end-of-run sweep of DuckLake databases
+      # can abort it (see the workaround in tests/conftest.py), so run one at a time.
+      max-parallel: 1
       matrix:
         database-type: [native, ducklake]
     env:
