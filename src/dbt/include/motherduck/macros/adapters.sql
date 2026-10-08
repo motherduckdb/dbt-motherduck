@@ -184,7 +184,7 @@
   {%- call statement('create_schema') -%}
     {% set sql %}
         select type from duckdb_databases()
-        where lower(database_name)='{{ relation.database | lower }}'
+        where lower(database_name)='{{ relation.database | lower | replace("'", "''") }}'
         and type != 'duckdb'
     {% endset %}
     {% set results = run_query(sql) %}
@@ -350,9 +350,9 @@
   {% call statement('get_indexes_on_relation', fetch_result=True, auto_begin=False) %}
     SELECT index_name
     FROM duckdb_indexes()
-    WHERE database_name = '{{ relation.database }}'
-      AND schema_name = '{{ relation.schema }}'
-      AND table_name = '{{ relation.identifier }}'
+    WHERE database_name = '{{ relation.database | replace("'", "''") }}'
+      AND schema_name = '{{ relation.schema | replace("'", "''") }}'
+      AND table_name = '{{ relation.identifier | replace("'", "''") }}'
   {% endcall %}
 
   {% set results = load_result('get_indexes_on_relation').table %}

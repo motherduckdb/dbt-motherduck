@@ -27,6 +27,7 @@ from dbt_common.contracts.constraints import (
 from dbt_common.dataclass_schema import ValidationError, dbtClassMixin
 from dbt_common.exceptions import DbtRuntimeError
 from dbt_common.utils import encoding as dbt_encoding
+from sqlparse import lexer
 
 from dbt.adapters.motherduck.column import MotherDuckColumn
 from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
@@ -300,9 +301,11 @@ class MotherDuckAdapter(SQLAdapter):
     def _constraint_target_without_database(constraint_to: str) -> str:
         # DuckDB does not accept a catalog-qualified foreign key target, even when
         # the target is in the current catalog.
-        pieces = constraint_to.split(".")
-        if len(pieces) > 2:
-            return ".".join(pieces[1:])
+        tokens = list(lexer.tokenize(constraint_to))
+        # Quoted identifiers can contain dots that are not namespace separators.
+        separators = [i for i, (_, value) in enumerate(tokens) if value == "."]
+        if len(separators) > 1:
+            return "".join(value for _, value in tokens[separators[0] + 1 :]).lstrip()
         return constraint_to
 
     def get_rows_different_sql(
