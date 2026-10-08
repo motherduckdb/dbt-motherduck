@@ -66,8 +66,17 @@ def test_profile_and_connection(connection_adapter, test_database):
             "SELECT current_database() AS db", fetch=True
         )
         assert table.rows[0]["db"] == credentials.database
+    assert not handle.closed
+    assert connection.state == ConnectionState.OPEN
+    with connection_adapter.connection_named("reused_connection"):
+        assert connection_adapter.connections.get_thread_connection() is connection
+        assert connection.handle is handle
+        _, table = connection_adapter.execute("SELECT 42", fetch=True)
+        assert table.rows[0][0] == 42
+    connection_adapter.cleanup_connections()
     assert handle.closed
     assert connection.state == ConnectionState.CLOSED
+    assert connection_adapter.connections.thread_connections == {}
 
 
 def test_execute_converts_results(connection_adapter):
@@ -182,8 +191,13 @@ def test_pipeline_transaction_lifecycle(connection_adapter, finish):
                 assert (
                     handle.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
                 )
-        assert handle.closed
+        assert not handle.closed
+        assert not connection.transaction_open
+        assert handle.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
         with connection_adapter.connection_named("pipeline_verify"):
+            assert (
+                connection_adapter.connections.get_thread_connection().handle is handle
+            )
             _, table = connection_adapter.execute(
                 "SELECT count(*) FROM main.pipeline_probe", fetch=True
             )
@@ -328,7 +342,8 @@ def test_query_failure_discards_connection(connection_adapter):
         assert connection_adapter.connections.get_thread_connection().transaction_open
         assert replacement is not handle
         assert table.rows[0]["answer"] == 2
-    assert replacement.closed
+    assert not replacement.closed
+    assert not connection_adapter.connections.get_thread_connection().transaction_open
 
 
 def test_rejected_authentication(connection_adapter):
@@ -429,7 +444,7 @@ def test_concurrent_session_isolation(connection_adapter):
                 messages.put(writer)
                 assert proceed.get(timeout=30) == "commit"
                 connection_adapter.commit_if_has_connection()
-            return writer.closed
+            return writer
 
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -443,7 +458,8 @@ def test_concurrent_session_isolation(connection_adapter):
                     assert table.rows[0][0] == 0
                 finally:
                     proceed.put("commit")
-                assert future.result(timeout=30)
+                assert future.result(timeout=30) is writer
+                assert not writer.closed
             assert not reader.closed
             _, table = connection_adapter.execute(
                 "SELECT count(*) FROM main.isolation_probe", fetch=True
@@ -495,7 +511,7 @@ def test_interrupted_queries_rollback_and_reconnect(
             replacement = connection_adapter.connections.get_thread_connection().handle
             assert replacement is not handle
             connection_adapter.commit_if_has_connection()
-        assert replacement.closed
+        assert not replacement.closed
         return handle
 
     with connection_adapter.connection_named("interrupt_observer"):
