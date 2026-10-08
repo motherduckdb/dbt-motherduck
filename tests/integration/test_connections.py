@@ -20,28 +20,6 @@ from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
-def _wait_for_active(handle, future):
-    deadline = monotonic() + 10
-    while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
-        if future.done():
-            future.result()
-            pytest.fail("Query finished before interruption")
-        assert monotonic() < deadline, "Query did not become active"
-        sleep(0.01)
-
-
-def _close_query_socket(query_socket, future):
-    try:
-        if not future.done():
-            # Unblock libpq before executor shutdown if cancellation failed.
-            try:
-                query_socket.shutdown(SHUT_RDWR)
-            except OSError:
-                pass
-    finally:
-        query_socket.close()
-
-
 def test_profile_and_connection(connection_adapter, test_database):
     assert isinstance(connection_adapter, MotherDuckAdapter)
     assert connection_adapter.config.threads == 2
@@ -138,46 +116,63 @@ def test_response_metadata_and_fetch_limit(connection_adapter):
                 connection_adapter.execute("DROP TABLE main.response_probe")
 
 
-def test_dependent_statements_and_rollback(connection_adapter):
-    with connection_adapter.connection_named("dependent_statements"):
-        _, table = connection_adapter.execute(
-            "CREATE TABLE main.statement_probe (value VARCHAR); "
-            "INSERT INTO main.statement_probe VALUES ('a;b'), ($literal$c;d$literal$); "
-            "-- semicolon in a comment;\nSELECT value FROM main.statement_probe ORDER BY value; ; /* tail; */ -- last comment",
-            auto_begin=True,
-            fetch=True,
-        )
-        assert [row[0] for row in table.rows] == ["a;b", "c;d"]
-        connection_adapter.commit_if_has_connection()
-        with pytest.raises(DbtDatabaseError):
-            connection_adapter.execute(
-                "INSERT INTO main.statement_probe VALUES ('rollback'); "
-                "SELECT error('intentional statement failure')",
-                auto_begin=True,
-            )
-    with connection_adapter.connection_named("verify_statement_rollback"):
-        _, table = connection_adapter.execute(
-            "SELECT count(*) FROM main.statement_probe", fetch=True
-        )
-        assert table.rows[0][0] == 2
-        connection_adapter.execute("DROP TABLE main.statement_probe")
-
-
-@pytest.mark.parametrize("bindings", [(1, 2), {"first": 1, "second": 2}])
-def test_multiple_bound_statements_have_actionable_error(connection_adapter, bindings):
-    sql = (
-        "select %s; select %s"
-        if isinstance(bindings, tuple)
-        else "select %(first)s; select %(second)s"
+def test_bound_types_and_result_conversion(connection_adapter):
+    values = (
+        None,
+        Decimal("123456789.123456789"),
+        datetime(2025, 1, 2, 3, 4, 5, 123456),
+        datetime(2025, 1, 2, 1, 4, 5, tzinfo=timezone.utc),
+        b"\x00\xffA",
+        [1, None, 3],
+        "quotes ' ; and non-ASCII: café",
     )
-    with connection_adapter.connection_named("unsupported_bound_batch"):
-        with pytest.raises(
-            DbtRuntimeError,
-            match="Execute each statement separately with its own bindings",
-        ):
-            connection_adapter.connections.add_query(sql, bindings=bindings)
-        _, table = connection_adapter.execute("select answer: 42", fetch=True)
-        assert table.rows[0][0] == 42
+    with connection_adapter.connection_named("types"):
+        connection_adapter.execute(
+            "CREATE TABLE main.type_probe (missing INTEGER, amount DECIMAL(20,9), "
+            "ts TIMESTAMP, tz TIMESTAMPTZ, payload BLOB, items INTEGER[], label VARCHAR)"
+        )
+        try:
+            _, cursor = connection_adapter.connections.add_query(
+                "INSERT INTO main.type_probe VALUES (%s, %s, %s, %s, %s, [1, NULL, 3], %s)",
+                auto_begin=False,
+                bindings=(*values[:5], values[6]),
+            )
+            cursor.close()
+            _, cursor = connection_adapter.connections.add_query(
+                "SELECT * FROM main.type_probe", auto_begin=False
+            )
+            try:
+                assert cursor.fetchone() == values
+            finally:
+                cursor.close()
+            _, table = connection_adapter.execute(
+                "SELECT * FROM main.type_probe", fetch=True
+            )
+            assert tuple(table.rows[0]) == (
+                *values[:4],
+                str(values[4]),
+                "[1, null, 3]",
+                values[6],
+            )
+            _, columns = connection_adapter.execute(
+                "DESCRIBE main.type_probe", fetch=True
+            )
+            assert [row[1] for row in columns.rows] == [
+                "INTEGER",
+                "DECIMAL(20,9)",
+                "TIMESTAMP",
+                "TIMESTAMP WITH TIME ZONE",
+                "BLOB",
+                "INTEGER[]",
+                "VARCHAR",
+            ]
+            _, nested = connection_adapter.execute(
+                "SELECT {'id': 1, 'name': 'a;b'} AS nested", fetch=True
+            )
+            assert nested.rows[0][0] == "{'id': 1, 'name': a;b}"
+        finally:
+            with connection_adapter.connection_named("types_cleanup"):
+                connection_adapter.execute("DROP TABLE main.type_probe")
 
 
 def test_bound_statement_with_trailing_comments(connection_adapter):
@@ -217,43 +212,46 @@ def test_user_comments_reach_driver(connection_adapter, monkeypatch, auto_begin)
         assert all(comment in "\n".join(sent_sql) for comment in comments)
 
 
-@pytest.mark.parametrize("operation", ["connect", "query"])
-def test_driver_errors_redact_credentials(connection_adapter, monkeypatch, operation):
-    token = "synthetic-sensitive-token"
-    failure = psycopg.OperationalError(f"intentional driver failure containing {token}")
-    credentials = connection_adapter.config.credentials
-    original_token = credentials.token
-    try:
-        with connection_adapter.connection_named("redaction"):
-            if operation == "connect":
+@pytest.mark.parametrize("bindings", [(1, 2), {"first": 1, "second": 2}])
+def test_multiple_bound_statements_have_actionable_error(connection_adapter, bindings):
+    sql = (
+        "select %s; select %s"
+        if isinstance(bindings, tuple)
+        else "select %(first)s; select %(second)s"
+    )
+    with connection_adapter.connection_named("unsupported_bound_batch"):
+        with pytest.raises(
+            DbtRuntimeError,
+            match="Execute each statement separately with its own bindings",
+        ):
+            connection_adapter.connections.add_query(sql, bindings=bindings)
+        _, table = connection_adapter.execute("select answer: 42", fetch=True)
+        assert table.rows[0][0] == 42
 
-                def fail_connect(*args, **kwargs):
-                    raise failure
 
-                monkeypatch.setattr(psycopg, "connect", fail_connect)
-            else:
-                connection_adapter.execute("select 1")
-                handle = connection_adapter.connections.get_thread_connection().handle
-                original_execute = psycopg.Cursor.execute
-
-                def fail_query(cursor, query, *args, **kwargs):
-                    if cursor.connection is handle:
-                        raise failure
-                    return original_execute(cursor, query, *args, **kwargs)
-
-                monkeypatch.setattr(psycopg.Cursor, "execute", fail_query)
-            # Do not put a real credential into a deliberately raised exception.
-            credentials.token = token
-            expected_error = (
-                FailedToConnectError if operation == "connect" else DbtDatabaseError
+def test_dependent_statements_and_rollback(connection_adapter):
+    with connection_adapter.connection_named("dependent_statements"):
+        _, table = connection_adapter.execute(
+            "CREATE TABLE main.statement_probe (value VARCHAR); "
+            "INSERT INTO main.statement_probe VALUES ('a;b'), ($literal$c;d$literal$); "
+            "-- semicolon in a comment;\nSELECT value FROM main.statement_probe ORDER BY value; ; /* tail; */ -- last comment",
+            auto_begin=True,
+            fetch=True,
+        )
+        assert [row[0] for row in table.rows] == ["a;b", "c;d"]
+        connection_adapter.commit_if_has_connection()
+        with pytest.raises(DbtDatabaseError):
+            connection_adapter.execute(
+                "INSERT INTO main.statement_probe VALUES ('rollback'); "
+                "SELECT error('intentional statement failure')",
+                auto_begin=True,
             )
-            with pytest.raises(expected_error) as error:
-                connection_adapter.execute("select 42")
-            assert token not in str(error.value)
-            assert "[REDACTED]" in str(error.value)
-            assert token not in "".join(format_exception(error.value))
-    finally:
-        credentials.token = original_token
+    with connection_adapter.connection_named("verify_statement_rollback"):
+        _, table = connection_adapter.execute(
+            "SELECT count(*) FROM main.statement_probe", fetch=True
+        )
+        assert table.rows[0][0] == 2
+        connection_adapter.execute("DROP TABLE main.statement_probe")
 
 
 @pytest.mark.parametrize("finish", ["commit", "rollback", "release"])
@@ -302,6 +300,38 @@ def test_pipeline_transaction_lifecycle(connection_adapter, finish):
     finally:
         with connection_adapter.connection_named("pipeline_cleanup"):
             connection_adapter.execute("DROP TABLE main.pipeline_probe")
+
+
+def test_pipeline_many_results_and_final_dml_response(connection_adapter):
+    with connection_adapter.connection_named("many_results"):
+        connection_adapter.execute("CREATE TABLE main.many_results_probe (id INTEGER)")
+        try:
+            statements = [
+                f"SELECT id: i + {number * 1000} FROM range(128) AS t(i)"
+                for number in range(50)
+            ]
+            statements.append(
+                "INSERT INTO main.many_results_probe SELECT * FROM range(17)"
+            )
+            response, table = connection_adapter.execute(
+                "; ".join(statements), auto_begin=True
+            )
+            assert response.code == "INSERT"
+            assert response.rows_affected == 17
+            assert len(table.rows) == 0
+            response, table = connection_adapter.execute(
+                "SELECT 42; SELECT id FROM main.many_results_probe ORDER BY id",
+                fetch=True,
+                limit=3,
+            )
+            assert response.code == "SELECT"
+            assert response.rows_affected == 17
+            assert [row[0] for row in table.rows] == [0, 1, 2]
+            connection_adapter.commit_if_has_connection()
+        finally:
+            with connection_adapter.connection_named("many_results_cleanup"):
+                connection_adapter.connections.rollback_if_open()
+                connection_adapter.execute("DROP TABLE main.many_results_probe")
 
 
 @pytest.mark.parametrize("position", [0, 1, 2], ids=["first", "middle", "last"])
@@ -386,142 +416,6 @@ def test_nontransactional_batch_failure_preserves_committed_prefix(connection_ad
             connection_adapter.execute("DROP TABLE main.nontransactional_probe")
 
 
-def test_pipeline_many_results_and_final_dml_response(connection_adapter):
-    with connection_adapter.connection_named("many_results"):
-        connection_adapter.execute("CREATE TABLE main.many_results_probe (id INTEGER)")
-        try:
-            statements = [
-                f"SELECT id: i + {number * 1000} FROM range(128) AS t(i)"
-                for number in range(50)
-            ]
-            statements.append(
-                "INSERT INTO main.many_results_probe SELECT * FROM range(17)"
-            )
-            response, table = connection_adapter.execute(
-                "; ".join(statements), auto_begin=True
-            )
-            assert response.code == "INSERT"
-            assert response.rows_affected == 17
-            assert len(table.rows) == 0
-            response, table = connection_adapter.execute(
-                "SELECT 42; SELECT id FROM main.many_results_probe ORDER BY id",
-                fetch=True,
-                limit=3,
-            )
-            assert response.code == "SELECT"
-            assert response.rows_affected == 17
-            assert [row[0] for row in table.rows] == [0, 1, 2]
-            connection_adapter.commit_if_has_connection()
-        finally:
-            with connection_adapter.connection_named("many_results_cleanup"):
-                connection_adapter.connections.rollback_if_open()
-                connection_adapter.execute("DROP TABLE main.many_results_probe")
-
-
-def test_query_failure_discards_connection(connection_adapter):
-    with connection_adapter.connection_named("query_failure"):
-        connection_adapter.execute("SELECT 1", auto_begin=True)
-        connection = connection_adapter.connections.get_thread_connection()
-        handle = connection.handle
-        assert connection.transaction_open
-        with pytest.raises(DbtDatabaseError) as error:
-            connection_adapter.execute(
-                "SELECT * FROM dbt_motherduck_intentionally_missing_function()"
-            )
-        assert connection_adapter.config.credentials.token not in str(error.value)
-        assert connection_adapter.config.credentials.token not in "".join(
-            format_exception(error.value)
-        )
-        assert handle.closed
-        assert connection.state == ConnectionState.CLOSED
-        assert not connection.transaction_open
-    with connection_adapter.connection_named("after_failure"):
-        _, table = connection_adapter.execute(
-            "SELECT 2 AS answer", auto_begin=True, fetch=True
-        )
-        replacement = connection_adapter.connections.get_thread_connection().handle
-        assert connection_adapter.connections.get_thread_connection().transaction_open
-        assert replacement is not handle
-        assert table.rows[0]["answer"] == 2
-    assert not replacement.closed
-    assert not connection_adapter.connections.get_thread_connection().transaction_open
-
-
-def test_rejected_authentication(connection_adapter):
-    connection_adapter.config.credentials.token = (
-        "dbt-motherduck-intentionally-invalid-token"
-    )
-    with connection_adapter.connection_named("invalid_token"):
-        with pytest.raises(FailedToConnectError) as error:
-            connection_adapter.execute("SELECT 1")
-        connection = connection_adapter.connections.get_thread_connection()
-        assert connection.state == ConnectionState.FAIL
-        assert connection.handle is None
-        assert connection_adapter.config.credentials.token not in str(error.value)
-        assert connection_adapter.config.credentials.token not in "".join(
-            format_exception(error.value)
-        )
-
-
-def test_bound_types_and_result_conversion(connection_adapter):
-    values = (
-        None,
-        Decimal("123456789.123456789"),
-        datetime(2025, 1, 2, 3, 4, 5, 123456),
-        datetime(2025, 1, 2, 1, 4, 5, tzinfo=timezone.utc),
-        b"\x00\xffA",
-        [1, None, 3],
-        "quotes ' ; and non-ASCII: café",
-    )
-    with connection_adapter.connection_named("types"):
-        connection_adapter.execute(
-            "CREATE TABLE main.type_probe (missing INTEGER, amount DECIMAL(20,9), "
-            "ts TIMESTAMP, tz TIMESTAMPTZ, payload BLOB, items INTEGER[], label VARCHAR)"
-        )
-        try:
-            _, cursor = connection_adapter.connections.add_query(
-                "INSERT INTO main.type_probe VALUES (%s, %s, %s, %s, %s, [1, NULL, 3], %s)",
-                auto_begin=False,
-                bindings=(*values[:5], values[6]),
-            )
-            cursor.close()
-            _, cursor = connection_adapter.connections.add_query(
-                "SELECT * FROM main.type_probe", auto_begin=False
-            )
-            try:
-                assert cursor.fetchone() == values
-            finally:
-                cursor.close()
-            _, table = connection_adapter.execute(
-                "SELECT * FROM main.type_probe", fetch=True
-            )
-            assert tuple(table.rows[0]) == (
-                *values[:4],
-                str(values[4]),
-                "[1, null, 3]",
-                values[6],
-            )
-            _, columns = connection_adapter.execute(
-                "DESCRIBE main.type_probe", fetch=True
-            )
-            assert [row[1] for row in columns.rows] == [
-                "INTEGER",
-                "DECIMAL(20,9)",
-                "TIMESTAMP",
-                "TIMESTAMP WITH TIME ZONE",
-                "BLOB",
-                "INTEGER[]",
-                "VARCHAR",
-            ]
-            _, nested = connection_adapter.execute(
-                "SELECT {'id': 1, 'name': 'a;b'} AS nested", fetch=True
-            )
-            assert nested.rows[0][0] == "{'id': 1, 'name': a;b}"
-        finally:
-            with connection_adapter.connection_named("types_cleanup"):
-                connection_adapter.execute("DROP TABLE main.type_probe")
-
-
 def test_concurrent_session_isolation(connection_adapter):
     with connection_adapter.connection_named("reader"):
         connection_adapter.execute("CREATE TABLE main.isolation_probe (id INTEGER)")
@@ -561,6 +455,186 @@ def test_concurrent_session_isolation(connection_adapter):
             assert table.rows[0][0] == 1
         finally:
             connection_adapter.execute("DROP TABLE main.isolation_probe")
+
+
+def test_rejected_authentication(connection_adapter):
+    connection_adapter.config.credentials.token = (
+        "dbt-motherduck-intentionally-invalid-token"
+    )
+    with connection_adapter.connection_named("invalid_token"):
+        with pytest.raises(FailedToConnectError) as error:
+            connection_adapter.execute("SELECT 1")
+        connection = connection_adapter.connections.get_thread_connection()
+        assert connection.state == ConnectionState.FAIL
+        assert connection.handle is None
+        assert connection_adapter.config.credentials.token not in str(error.value)
+        assert connection_adapter.config.credentials.token not in "".join(
+            format_exception(error.value)
+        )
+
+
+@pytest.mark.parametrize("operation", ["connect", "query"])
+def test_driver_errors_redact_credentials(connection_adapter, monkeypatch, operation):
+    token = "synthetic-sensitive-token"
+    failure = psycopg.OperationalError(f"intentional driver failure containing {token}")
+    credentials = connection_adapter.config.credentials
+    original_token = credentials.token
+    try:
+        with connection_adapter.connection_named("redaction"):
+            if operation == "connect":
+
+                def fail_connect(*args, **kwargs):
+                    raise failure
+
+                monkeypatch.setattr(psycopg, "connect", fail_connect)
+            else:
+                connection_adapter.execute("select 1")
+                handle = connection_adapter.connections.get_thread_connection().handle
+                original_execute = psycopg.Cursor.execute
+
+                def fail_query(cursor, query, *args, **kwargs):
+                    if cursor.connection is handle:
+                        raise failure
+                    return original_execute(cursor, query, *args, **kwargs)
+
+                monkeypatch.setattr(psycopg.Cursor, "execute", fail_query)
+            # Do not put a real credential into a deliberately raised exception.
+            credentials.token = token
+            expected_error = (
+                FailedToConnectError if operation == "connect" else DbtDatabaseError
+            )
+            with pytest.raises(expected_error) as error:
+                connection_adapter.execute("select 42")
+            assert token not in str(error.value)
+            assert "[REDACTED]" in str(error.value)
+            assert token not in "".join(format_exception(error.value))
+    finally:
+        credentials.token = original_token
+
+
+def test_query_failure_discards_connection(connection_adapter):
+    with connection_adapter.connection_named("query_failure"):
+        connection_adapter.execute("SELECT 1", auto_begin=True)
+        connection = connection_adapter.connections.get_thread_connection()
+        handle = connection.handle
+        assert connection.transaction_open
+        with pytest.raises(DbtDatabaseError) as error:
+            connection_adapter.execute(
+                "SELECT * FROM dbt_motherduck_intentionally_missing_function()"
+            )
+        assert connection_adapter.config.credentials.token not in str(error.value)
+        assert connection_adapter.config.credentials.token not in "".join(
+            format_exception(error.value)
+        )
+        assert handle.closed
+        assert connection.state == ConnectionState.CLOSED
+        assert not connection.transaction_open
+    with connection_adapter.connection_named("after_failure"):
+        _, table = connection_adapter.execute(
+            "SELECT 2 AS answer", auto_begin=True, fetch=True
+        )
+        replacement = connection_adapter.connections.get_thread_connection().handle
+        assert connection_adapter.connections.get_thread_connection().transaction_open
+        assert replacement is not handle
+        assert table.rows[0]["answer"] == 2
+    assert not replacement.closed
+    assert not connection_adapter.connections.get_thread_connection().transaction_open
+
+
+def test_cancel_idle_connection_remains_usable(connection_adapter):
+    with connection_adapter.connection_named("idle_cancel"):
+        connection_adapter.execute("SELECT 1")
+        connection = connection_adapter.connections.get_thread_connection()
+        handle = connection.handle
+        for _ in range(3):
+            connection_adapter.connections.cancel(connection)
+            _, table = connection_adapter.execute("SELECT 42", fetch=True)
+            assert table.rows[0][0] == 42
+            assert connection.handle is handle
+            assert not handle.closed
+
+
+@pytest.mark.parametrize(
+    "error_type", [psycopg.errors.CancellationTimeout, psycopg.OperationalError]
+)
+def test_cancel_open_continues_after_cancellation_failure(
+    connection_adapter, monkeypatch, error_type
+):
+    connections = Queue()
+    proceed = Event()
+    attempted_handles = []
+    token = "synthetic-sensitive-token"
+    original_cancel = psycopg.Connection.cancel_safe
+    cancellation_events = EventCatcher(AdapterEventInfo)
+    event_manager = get_event_manager()
+
+    def run_worker(name):
+        with connection_adapter.connection_named(name):
+            connection_adapter.execute("SELECT 1")
+            connection = connection_adapter.connections.get_thread_connection()
+            handle = connection.handle
+            connections.put(connection)
+            assert proceed.wait(timeout=90), "Cancellation attempts did not finish"
+            _, table = connection_adapter.execute("SELECT 42", fetch=True)
+            assert table.rows[0][0] == 42
+            assert connection.handle is handle
+            assert not handle.closed
+
+    def cancel(handle, *args, **kwargs):
+        attempted_handles.append(handle)
+        if handle is failed_connection.handle:
+            raise error_type(f"intentional cancellation failure containing {token}")
+        return original_cancel(handle, *args, **kwargs)
+
+    with connection_adapter.connection_named("multi_cancel_observer"):
+        connection_adapter.execute("SELECT 1")
+        observer = connection_adapter.connections.get_thread_connection().handle
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            try:
+                futures = [executor.submit(run_worker, "worker_0")]
+                failed_connection = connections.get(timeout=30)
+                futures.append(executor.submit(run_worker, "worker_1"))
+                other_connection = connections.get(timeout=30)
+                credentials = failed_connection.credentials
+                original_token = credentials.token
+                event_manager.add_callback(cancellation_events.catch)
+                try:
+                    # Both sessions are already open; never put a real token in the injected error.
+                    credentials.token = token
+                    with monkeypatch.context() as patch:
+                        patch.setattr(psycopg.Connection, "cancel_safe", cancel)
+                        patch.setattr(
+                            event_manager, "require_warn_or_error_handling", True
+                        )
+                        patch.setattr(event_manager, "warn_error", True)
+                        assert set(connection_adapter.connections.cancel_open()) == {
+                            "worker_0",
+                            "worker_1",
+                        }
+                finally:
+                    credentials.token = original_token
+                    event_manager.callbacks.remove(cancellation_events.catch)
+                assert set(attempted_handles) == {
+                    failed_connection.handle,
+                    other_connection.handle,
+                }
+                failure_event = next(
+                    event
+                    for event in cancellation_events.caught_events
+                    if "intentional cancellation failure" in event.info.msg
+                )
+                assert "worker_0" in failure_event.info.msg
+                assert "[REDACTED]" in failure_event.info.msg
+                assert token not in str(failure_event)
+                proceed.set()
+                for future in futures:
+                    future.result(timeout=30)
+            finally:
+                proceed.set()
+        _, table = connection_adapter.execute("SELECT 42", fetch=True)
+        assert table.rows[0][0] == 42
+        assert connection_adapter.connections.get_thread_connection().handle is observer
+        assert not observer.closed
 
 
 @pytest.mark.parametrize(
@@ -663,97 +737,23 @@ def test_interrupted_queries_rollback_and_reconnect(
             connection_adapter.execute("DROP TABLE main.interrupted_probe")
 
 
-@pytest.mark.parametrize(
-    "error_type", [psycopg.errors.CancellationTimeout, psycopg.OperationalError]
-)
-def test_cancel_open_continues_after_cancellation_failure(
-    connection_adapter, monkeypatch, error_type
-):
-    connections = Queue()
-    proceed = Event()
-    attempted_handles = []
-    token = "synthetic-sensitive-token"
-    original_cancel = psycopg.Connection.cancel_safe
-    cancellation_events = EventCatcher(AdapterEventInfo)
-    event_manager = get_event_manager()
+def _wait_for_active(handle, future):
+    deadline = monotonic() + 10
+    while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
+        if future.done():
+            future.result()
+            pytest.fail("Query finished before interruption")
+        assert monotonic() < deadline, "Query did not become active"
+        sleep(0.01)
 
-    def run_worker(name):
-        with connection_adapter.connection_named(name):
-            connection_adapter.execute("SELECT 1")
-            connection = connection_adapter.connections.get_thread_connection()
-            handle = connection.handle
-            connections.put(connection)
-            assert proceed.wait(timeout=90), "Cancellation attempts did not finish"
-            _, table = connection_adapter.execute("SELECT 42", fetch=True)
-            assert table.rows[0][0] == 42
-            assert connection.handle is handle
-            assert not handle.closed
 
-    def cancel(handle, *args, **kwargs):
-        attempted_handles.append(handle)
-        if handle is failed_connection.handle:
-            raise error_type(f"intentional cancellation failure containing {token}")
-        return original_cancel(handle, *args, **kwargs)
-
-    with connection_adapter.connection_named("multi_cancel_observer"):
-        connection_adapter.execute("SELECT 1")
-        observer = connection_adapter.connections.get_thread_connection().handle
-        with ThreadPoolExecutor(max_workers=2) as executor:
+def _close_query_socket(query_socket, future):
+    try:
+        if not future.done():
+            # Unblock libpq before executor shutdown if cancellation failed.
             try:
-                futures = [executor.submit(run_worker, "worker_0")]
-                failed_connection = connections.get(timeout=30)
-                futures.append(executor.submit(run_worker, "worker_1"))
-                other_connection = connections.get(timeout=30)
-                credentials = failed_connection.credentials
-                original_token = credentials.token
-                event_manager.add_callback(cancellation_events.catch)
-                try:
-                    # Both sessions are already open; never put a real token in the injected error.
-                    credentials.token = token
-                    with monkeypatch.context() as patch:
-                        patch.setattr(psycopg.Connection, "cancel_safe", cancel)
-                        patch.setattr(
-                            event_manager, "require_warn_or_error_handling", True
-                        )
-                        patch.setattr(event_manager, "warn_error", True)
-                        assert set(connection_adapter.connections.cancel_open()) == {
-                            "worker_0",
-                            "worker_1",
-                        }
-                finally:
-                    credentials.token = original_token
-                    event_manager.callbacks.remove(cancellation_events.catch)
-                assert set(attempted_handles) == {
-                    failed_connection.handle,
-                    other_connection.handle,
-                }
-                failure_event = next(
-                    event
-                    for event in cancellation_events.caught_events
-                    if "intentional cancellation failure" in event.info.msg
-                )
-                assert "worker_0" in failure_event.info.msg
-                assert "[REDACTED]" in failure_event.info.msg
-                assert token not in str(failure_event)
-                proceed.set()
-                for future in futures:
-                    future.result(timeout=30)
-            finally:
-                proceed.set()
-        _, table = connection_adapter.execute("SELECT 42", fetch=True)
-        assert table.rows[0][0] == 42
-        assert connection_adapter.connections.get_thread_connection().handle is observer
-        assert not observer.closed
-
-
-def test_cancel_idle_connection_remains_usable(connection_adapter):
-    with connection_adapter.connection_named("idle_cancel"):
-        connection_adapter.execute("SELECT 1")
-        connection = connection_adapter.connections.get_thread_connection()
-        handle = connection.handle
-        for _ in range(3):
-            connection_adapter.connections.cancel(connection)
-            _, table = connection_adapter.execute("SELECT 42", fetch=True)
-            assert table.rows[0][0] == 42
-            assert connection.handle is handle
-            assert not handle.closed
+                query_socket.shutdown(SHUT_RDWR)
+            except OSError:
+                pass
+    finally:
+        query_socket.close()
