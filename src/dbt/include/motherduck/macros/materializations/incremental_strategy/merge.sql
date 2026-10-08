@@ -1,34 +1,5 @@
 {# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
    dbt/include/duckdb/macros/materializations/incremental_strategy/merge.sql. #}
-{% macro motherduck__merge_join_clause(unique_key, merge_on_using_columns, incremental_predicates) -%}
-    {%- set incremental_filters = [] if incremental_predicates is none else [] + incremental_predicates -%}
-    {%- set join_predicates = [] -%}
-    {%- set using_clause_requested = merge_on_using_columns and merge_on_using_columns | length > 0 -%}
-
-    {%- if not using_clause_requested -%}
-        {% if unique_key %}
-            {% if unique_key is sequence and unique_key is not mapping and unique_key is not string %}
-                {% for key in unique_key %}
-                    {% do join_predicates.append("DBT_INTERNAL_SOURCE." ~ key ~ " = DBT_INTERNAL_DEST." ~ key) %}
-                {% endfor %}
-            {% else %}
-                {% do join_predicates.append("DBT_INTERNAL_SOURCE." ~ unique_key ~ " = DBT_INTERNAL_DEST." ~ unique_key) %}
-            {% endif %}
-        {% else %}
-            {% do join_predicates.append('FALSE') %}
-        {% endif %}
-    {%- endif -%}
-
-    {% if using_clause_requested %}
-        USING ({{ merge_on_using_columns | join(', ') }})
-        {%- if incremental_filters | length > 0 %}
-        ON ({{ incremental_filters | join(") AND (") }})
-        {%- endif %}
-    {% else %}
-        ON ({{ (join_predicates + incremental_filters) | join(") AND (") }})
-    {% endif %}
-{%- endmacro %}
-
 {% macro motherduck__get_incremental_merge_sql(args_dict) %}
   {%- set target_relation = args_dict['target_relation'] -%}
   {%- set temp_relation = args_dict['temp_relation'] -%}
@@ -180,3 +151,32 @@
     RETURNING {{ merge_returning_columns if merge_returning_columns is string else merge_returning_columns | join(', ') }}
     {%- endif %}
 {% endmacro %}
+
+{% macro motherduck__merge_join_clause(unique_key, merge_on_using_columns, incremental_predicates) -%}
+    {%- set incremental_filters = [] if incremental_predicates is none else [] + incremental_predicates -%}
+    {%- set join_predicates = [] -%}
+    {%- set using_clause_requested = merge_on_using_columns and merge_on_using_columns | length > 0 -%}
+
+    {%- if not using_clause_requested -%}
+        {% if unique_key %}
+            {% if unique_key is sequence and unique_key is not mapping and unique_key is not string %}
+                {% for key in unique_key %}
+                    {% do join_predicates.append("DBT_INTERNAL_SOURCE." ~ key ~ " = DBT_INTERNAL_DEST." ~ key) %}
+                {% endfor %}
+            {% else %}
+                {% do join_predicates.append("DBT_INTERNAL_SOURCE." ~ unique_key ~ " = DBT_INTERNAL_DEST." ~ unique_key) %}
+            {% endif %}
+        {% else %}
+            {% do join_predicates.append('FALSE') %}
+        {% endif %}
+    {%- endif -%}
+
+    {% if using_clause_requested %}
+        USING ({{ merge_on_using_columns | join(', ') }})
+        {%- if incremental_filters | length > 0 %}
+        ON ({{ incremental_filters | join(") AND (") }})
+        {%- endif %}
+    {% else %}
+        ON ({{ (join_predicates + incremental_filters) | join(") AND (") }})
+    {% endif %}
+{%- endmacro %}

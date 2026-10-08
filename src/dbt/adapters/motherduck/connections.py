@@ -28,46 +28,6 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # returns which databases are needed to run the dbt project.
         self.databases_needed_callback = self._uninitialized_databases_needed
 
-    @staticmethod
-    def _uninitialized_databases_needed():
-        raise DbtInternalError(
-            "The adapter must initialize databases_needed_callback before opening a connection. "
-            "This code should never be reached. If you encounter this error, "
-            "contact MotherDuck support at support@motherduck.com."
-        )
-
-    @staticmethod
-    def _attach_databases(handle, databases):
-        requested_databases = {name.casefold(): name for name in databases}
-        if not requested_databases:
-            return
-        with handle.cursor() as cursor:
-            attached_databases = cursor.execute(
-                "select alias from md_attached_databases()"
-            ).fetchall()
-            attached_database_names = set(
-                row[0].casefold() for row in attached_databases
-            )
-            pending_databases = requested_databases.keys() - attached_database_names
-            if not pending_databases:
-                return
-            available_databases = cursor.execute(
-                "select alias from md_all_databases()"
-            ).fetchall()
-            database_aliases = {
-                row[0].casefold(): row[0] for row in available_databases
-            }
-            for key in sorted(pending_databases):
-                if key not in database_aliases:
-                    raise psycopg.OperationalError(
-                        f"MotherDuck database '{requested_databases[key]}' does not exist or is not accessible"
-                    )
-                cursor.execute(
-                    pg_sql.SQL("attach {}").format(
-                        pg_sql.Literal(f"md:{database_aliases[key]}")
-                    )
-                )
-
     def open(self, connection):
         if connection.state == ConnectionState.OPEN:
             return connection
@@ -180,33 +140,19 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 self.clear_thread_connection()
             raise
 
-    @contextmanager
-    def exception_handler(self, sql):
+    def cancel(self, connection):
+        # .cancel() is only called to cancel the whole dbt invocation
+        # handle cancellation failures so that it doesn't prevent cancellation attempts of other connections
         try:
-            yield
-        except psycopg.Error as exc:
-            connection = self.get_thread_connection()
+            connection.handle.cancel_safe()
+        except Exception as exc:
             message = str(exc).replace(connection.credentials.token, "[REDACTED]")
-            # Discard failed sessions rather than replaying SQL or reusing uncertain state.
-            connection.handle.close()
-            connection.transaction_open = False
-            connection.state = ConnectionState.CLOSED
-            raise DbtDatabaseError(message) from None
-
-    @classmethod
-    def get_response(cls, cursor):
-        status = cursor.statusmessage or "OK"
-        # DuckDB DML returns a Count row; cursor.rowcount counts that result row.
-        affected = cursor.pgresult.command_tuples
-        code = status.split()[0]
-        # The endpoint reports UPDATE/DELETE 1 even when zero or many rows change.
-        if code in {"UPDATE", "DELETE"}:
-            status, affected = code, None
-        return AdapterResponse(
-            _message=status,
-            code=code,
-            rows_affected=affected,
-        )
+            # log at info so --warn-error doesn't turn cancellation into a failure.
+            # --warn-error doesn't just log an error, it errors the process out
+            AdapterLogger("MotherDuck").info(
+                f"Could not cancel query on connection '{connection.name}': {message}. "
+                "The query may still be running; continuing with the remaining cancellation attempts."
+            )
 
     def execute(self, sql, auto_begin=False, fetch=False, limit=None):
         with self.exception_handler(sql):
@@ -309,6 +255,74 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             )
         return connection, cursor
 
+    @classmethod
+    def get_response(cls, cursor):
+        status = cursor.statusmessage or "OK"
+        # DuckDB DML returns a Count row; cursor.rowcount counts that result row.
+        affected = cursor.pgresult.command_tuples
+        code = status.split()[0]
+        # The endpoint reports UPDATE/DELETE 1 even when zero or many rows change.
+        if code in {"UPDATE", "DELETE"}:
+            status, affected = code, None
+        return AdapterResponse(
+            _message=status,
+            code=code,
+            rows_affected=affected,
+        )
+
+    @contextmanager
+    def exception_handler(self, sql):
+        try:
+            yield
+        except psycopg.Error as exc:
+            connection = self.get_thread_connection()
+            message = str(exc).replace(connection.credentials.token, "[REDACTED]")
+            # Discard failed sessions rather than replaying SQL or reusing uncertain state.
+            connection.handle.close()
+            connection.transaction_open = False
+            connection.state = ConnectionState.CLOSED
+            raise DbtDatabaseError(message) from None
+
+    @staticmethod
+    def _attach_databases(handle, databases):
+        requested_databases = {name.casefold(): name for name in databases}
+        if not requested_databases:
+            return
+        with handle.cursor() as cursor:
+            attached_databases = cursor.execute(
+                "select alias from md_attached_databases()"
+            ).fetchall()
+            attached_database_names = set(
+                row[0].casefold() for row in attached_databases
+            )
+            pending_databases = requested_databases.keys() - attached_database_names
+            if not pending_databases:
+                return
+            available_databases = cursor.execute(
+                "select alias from md_all_databases()"
+            ).fetchall()
+            database_aliases = {
+                row[0].casefold(): row[0] for row in available_databases
+            }
+            for key in sorted(pending_databases):
+                if key not in database_aliases:
+                    raise psycopg.OperationalError(
+                        f"MotherDuck database '{requested_databases[key]}' does not exist or is not accessible"
+                    )
+                cursor.execute(
+                    pg_sql.SQL("attach {}").format(
+                        pg_sql.Literal(f"md:{database_aliases[key]}")
+                    )
+                )
+
+    @staticmethod
+    def _uninitialized_databases_needed():
+        raise DbtInternalError(
+            "The adapter must initialize databases_needed_callback before opening a connection. "
+            "This code should never be reached. If you encounter this error, "
+            "contact MotherDuck support at support@motherduck.com."
+        )
+
     def _add_pipeline_queries(self, connection, statements, abridge_sql_log):
         cursors = []
         try:
@@ -369,17 +383,3 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 tokens[index] = (token, "")
             break
         return "".join(value for _, value in tokens)
-
-    def cancel(self, connection):
-        # .cancel() is only called to cancel the whole dbt invocation
-        # handle cancellation failures so that it doesn't prevent cancellation attempts of other connections
-        try:
-            connection.handle.cancel_safe()
-        except Exception as exc:
-            message = str(exc).replace(connection.credentials.token, "[REDACTED]")
-            # log at info so --warn-error doesn't turn cancellation into a failure.
-            # --warn-error doesn't just log an error, it errors the process out
-            AdapterLogger("MotherDuck").info(
-                f"Could not cancel query on connection '{connection.name}': {message}. "
-                "The query may still be running; continuing with the remaining cancellation attempts."
-            )

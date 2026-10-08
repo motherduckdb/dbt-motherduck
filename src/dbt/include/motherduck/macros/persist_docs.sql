@@ -6,6 +6,20 @@
   the Postgres relation/column commenting model as of 0.10.1
 #}
 
+{% macro motherduck__alter_relation_comment(relation, comment) %}
+  {% set escaped_comment = duckdb_escape_comment(comment) %}
+  comment on {{ relation.type }} {{ relation }} is {{ escaped_comment }};
+{% endmacro %}
+
+{% macro motherduck__alter_column_comment(relation, column_dict) %}
+  {% set existing_columns = adapter.get_columns_in_relation(relation) | map(attribute="name") | list %}
+  {% for column_name in column_dict if (column_name in existing_columns) %}
+    {% set comment = column_dict[column_name]['description'] %}
+    {% set escaped_comment = duckdb_escape_comment(comment) %}
+    comment on column {{ relation }}.{{ adapter.quote(column_name) if column_dict[column_name]['quote'] else column_name }} is {{ escaped_comment }};
+  {% endfor %}
+{% endmacro %}
+
 {#
   By using dollar-quoting like this, users can embed anything they want into their comments
   (including nested dollar-quoting), as long as they do not use this exact dollar-quoting
@@ -21,18 +35,3 @@
   {%- endif -%}
   {{ magic }}{{ comment }}{{ magic }}
 {%- endmacro %}
-
-{% macro motherduck__alter_relation_comment(relation, comment) %}
-  {% set escaped_comment = duckdb_escape_comment(comment) %}
-  comment on {{ relation.type }} {{ relation }} is {{ escaped_comment }};
-{% endmacro %}
-
-
-{% macro motherduck__alter_column_comment(relation, column_dict) %}
-  {% set existing_columns = adapter.get_columns_in_relation(relation) | map(attribute="name") | list %}
-  {% for column_name in column_dict if (column_name in existing_columns) %}
-    {% set comment = column_dict[column_name]['description'] %}
-    {% set escaped_comment = duckdb_escape_comment(comment) %}
-    comment on column {{ relation }}.{{ adapter.quote(column_name) if column_dict[column_name]['quote'] else column_name }} is {{ escaped_comment }};
-  {% endfor %}
-{% endmacro %}

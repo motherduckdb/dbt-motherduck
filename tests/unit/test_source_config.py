@@ -1,10 +1,8 @@
 import json
-import os
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
+
+from tests.unit.helpers import invoke_dbt
 
 
 @pytest.mark.parametrize(

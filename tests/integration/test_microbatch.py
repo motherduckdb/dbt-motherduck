@@ -145,73 +145,6 @@ select id, event_time, note from {{ ref('microbatch_reprocess_input') }}
 """
 
 
-class TestMicrobatchValidationMissingEventTime:
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "microbatch_missing_event_time.sql": models__microbatch_missing_event_time,
-        }
-
-    def test_missing_event_time_config(self, project):
-        with pytest.raises(ParsingError) as excinfo:
-            run_dbt(
-                ["run", "--select", "microbatch_missing_event_time"], expect_pass=False
-            )
-
-        assert "must provide an 'event_time'" in str(excinfo.value)
-
-
-class TestMicrobatchValidationMissingBatchContext:
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "microbatch_missing_batch_context.sql": models__microbatch_missing_batch_context,
-        }
-
-    def test_missing_batch_context(self, project):
-        with pytest.raises(ParsingError) as excinfo:
-            run_dbt(
-                ["run", "--select", "microbatch_missing_batch_context"],
-                expect_pass=False,
-            )
-
-        assert "must provide a 'begin'" in str(excinfo.value)
-
-
-class TestMicrobatchUniqueKeyNotSupported:
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "microbatch_unique_key_not_supported.sql": models__microbatch_unique_key_not_supported,
-        }
-
-    def test_unique_key_not_supported(self, project, capsys):
-        # Bound the run to two daily batches. The model config has a fixed
-        # begin='2025-01-01' and no end, so without explicit event-time bounds
-        # dbt expands the microbatch into one daily batch per day from that
-        # date to "now" -- a count that grows every day and, since each batch
-        # spins up a relation, made this test progressively slower (notably on
-        # MotherDuck, where every batch is a network round-trip). The
-        # unique_key rejection only fires on the incremental path, so we need
-        # the first batch to create the table and the second to trigger the
-        # error: a two-day window exercises the same validation with exactly
-        # two batches.
-        run_dbt(
-            [
-                "run",
-                "--select",
-                "microbatch_unique_key_not_supported",
-                "--event-time-start",
-                "2025-01-01",
-                "--event-time-end",
-                "2025-01-03",
-            ],
-            expect_pass=False,
-        )
-        captured = capsys.readouterr()
-        assert "does not support 'unique_key'" in (captured.out + captured.err)
-
-
 class TestMicrobatchScenarios:
     @pytest.fixture(scope="class")
     def models(self):
@@ -227,28 +160,6 @@ class TestMicrobatchScenarios:
             "microbatch_reprocess_input.sql": models__microbatch_reprocess_input,
             "microbatch_reprocess.sql": models__microbatch_reprocess,
         }
-
-    def _run_with_bounds(
-        self,
-        selects,
-        project,
-        expect_pass=True,
-        full_refresh=False,
-        start="2025-01-01",
-        end="2025-01-04",
-    ):
-        args = [
-            "run",
-            "--select",
-            selects,
-            "--event-time-start",
-            start,
-            "--event-time-end",
-            end,
-        ]
-        if full_refresh:
-            args.append("--full-refresh")
-        run_dbt(args, expect_pass=expect_pass)
 
     def test_microbatch_runs_twice_without_changes(self, project):
         self._run_with_bounds(
@@ -481,33 +392,27 @@ class TestMicrobatchScenarios:
         ids = project.run_sql(f"SELECT id FROM {relation} ORDER BY id", fetch="all")
         assert [row[0] for row in ids] == [2, 3]
 
-
-models__microbatch_lookback_input = """
-{{ config(materialized='table', event_time='event_time') }}
-
-select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time, 'v1' as version
-union all
-select 2 as id, '2025-01-02 00:00:00'::timestamp as event_time, 'v1' as version
-union all
-select 3 as id, '2025-01-03 00:00:00'::timestamp as event_time, 'v1' as version
-union all
-select 4 as id, '2025-01-04 00:00:00'::timestamp as event_time, 'v1' as version
-union all
-select 5 as id, '2025-01-05 00:00:00'::timestamp as event_time, 'v1' as version
-"""
-
-models__microbatch_lookback = """
-{{ config(
-    materialized='incremental',
-    incremental_strategy='microbatch',
-    event_time='event_time',
-    batch_size='day',
-    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0),
-    lookback=3
-) }}
-
-select id, event_time, version from {{ ref('microbatch_lookback_input') }}
-"""
+    def _run_with_bounds(
+        self,
+        selects,
+        project,
+        expect_pass=True,
+        full_refresh=False,
+        start="2025-01-01",
+        end="2025-01-04",
+    ):
+        args = [
+            "run",
+            "--select",
+            selects,
+            "--event-time-start",
+            start,
+            "--event-time-end",
+            end,
+        ]
+        if full_refresh:
+            args.append("--full-refresh")
+        run_dbt(args, expect_pass=expect_pass)
 
 
 class TestMicrobatchLookback:
@@ -559,3 +464,98 @@ class TestMicrobatchLookback:
         assert project.run_sql(
             f"SELECT version FROM {target} WHERE id = 2", fetch="one"
         ) == ("v1",)
+
+
+class TestMicrobatchValidationMissingEventTime:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_missing_event_time.sql": models__microbatch_missing_event_time,
+        }
+
+    def test_missing_event_time_config(self, project):
+        with pytest.raises(ParsingError) as excinfo:
+            run_dbt(
+                ["run", "--select", "microbatch_missing_event_time"], expect_pass=False
+            )
+
+        assert "must provide an 'event_time'" in str(excinfo.value)
+
+
+class TestMicrobatchValidationMissingBatchContext:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_missing_batch_context.sql": models__microbatch_missing_batch_context,
+        }
+
+    def test_missing_batch_context(self, project):
+        with pytest.raises(ParsingError) as excinfo:
+            run_dbt(
+                ["run", "--select", "microbatch_missing_batch_context"],
+                expect_pass=False,
+            )
+
+        assert "must provide a 'begin'" in str(excinfo.value)
+
+
+models__microbatch_lookback_input = """
+{{ config(materialized='table', event_time='event_time') }}
+
+select 1 as id, '2025-01-01 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 2 as id, '2025-01-02 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 3 as id, '2025-01-03 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 4 as id, '2025-01-04 00:00:00'::timestamp as event_time, 'v1' as version
+union all
+select 5 as id, '2025-01-05 00:00:00'::timestamp as event_time, 'v1' as version
+"""
+
+models__microbatch_lookback = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(2025, 1, 1, 0, 0, 0),
+    lookback=3
+) }}
+
+select id, event_time, version from {{ ref('microbatch_lookback_input') }}
+"""
+
+
+class TestMicrobatchUniqueKeyNotSupported:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_unique_key_not_supported.sql": models__microbatch_unique_key_not_supported,
+        }
+
+    def test_unique_key_not_supported(self, project, capsys):
+        # Bound the run to two daily batches. The model config has a fixed
+        # begin='2025-01-01' and no end, so without explicit event-time bounds
+        # dbt expands the microbatch into one daily batch per day from that
+        # date to "now" -- a count that grows every day and, since each batch
+        # spins up a relation, made this test progressively slower (notably on
+        # MotherDuck, where every batch is a network round-trip). The
+        # unique_key rejection only fires on the incremental path, so we need
+        # the first batch to create the table and the second to trigger the
+        # error: a two-day window exercises the same validation with exactly
+        # two batches.
+        run_dbt(
+            [
+                "run",
+                "--select",
+                "microbatch_unique_key_not_supported",
+                "--event-time-start",
+                "2025-01-01",
+                "--event-time-end",
+                "2025-01-03",
+            ],
+            expect_pass=False,
+        )
+        captured = capsys.readouterr()
+        assert "does not support 'unique_key'" in (captured.out + captured.err)
