@@ -59,6 +59,7 @@ def admin_connection(provisioning_profile_data):
         sslmode="verify-full",
         sslrootcert=credentials.sslrootcert,
         connect_timeout=credentials.connect_timeout,
+        options="-c attach_mode=single",
         autocommit=True,
     )
     try:
@@ -80,6 +81,9 @@ def temporary_database(admin_connection, database_type):
             sql.SQL("CREATE DATABASE {}{}").format(sql.Identifier(name), options)
         )
         try:
+            admin_connection.execute(
+                sql.SQL("ATTACH IF NOT EXISTS {}").format(sql.Literal(f"md:{name}"))
+            )
             yield name
         finally:
             admin_connection.execute(
