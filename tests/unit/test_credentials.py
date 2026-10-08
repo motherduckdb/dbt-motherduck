@@ -1,7 +1,10 @@
+import json
+
 import pytest
 from dbt_common.exceptions import DbtRuntimeError
 
 from dbt.adapters.motherduck.credentials import MotherDuckCredentials
+from tests.unit.helpers import invoke_dbt
 
 
 def test_defaults():
@@ -47,11 +50,15 @@ def test_invalid_credentials(changes):
 
 
 @pytest.mark.parametrize("missing", ["host", "token", "database", "schema"])
-def test_required_credentials(missing):
-    values = dict(host="example.com", token="secret", database="db", schema="main")
-    del values[missing]
-    with pytest.raises(TypeError):
-        MotherDuckCredentials(**values)
+def test_required_credentials(cli_project, missing):
+    profiles_file = cli_project / "profiles.yml"
+    profiles = json.loads(profiles_file.read_text())
+    del profiles["test"]["outputs"]["test"][missing]
+    profiles_file.write_text(json.dumps(profiles))
+    code, output = invoke_dbt(cli_project, "parse")
+    assert code != 0, output
+    assert missing in output
+    assert "required" in output.lower()
 
 
 def test_attachment_names_round_trip():

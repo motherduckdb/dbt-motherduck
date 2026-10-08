@@ -1,651 +1,281 @@
-# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
-# tests/functional/adapter/test_incremental.py. Adapter-specific options moved under meta.
+# Adapted from dbt-duckdb's incremental MERGE tests.
+import json
+import re
+
 import pytest
+from dbt.exceptions import ParsingError
 from dbt.tests.util import relation_from_name, run_dbt
-
-# Test models for merge strategy testing
-_model_source = """
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-"""
-
-_model_updates = """
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-"""
-
-
-# Basic merge configurations
-_merge_basic_update = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id'
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-_merge_with_conditions = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_update_condition': "DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age",
-'merge_insert_condition': "DBT_INTERNAL_SOURCE.age > 25"}
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-_merge_with_update_columns = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-merge_update_columns=['name', 'age']
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-_merge_with_exclude_columns = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-merge_exclude_columns=['job']
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-_merge_with_set_expressions = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_update_set_expressions': {'updated_at': 'CURRENT_TIMESTAMP', 'version': 'COALESCE(DBT_INTERNAL_DEST.version, 0) + 1'}}
-) }}
-
-SELECT id, name, age, job, CURRENT_TIMESTAMP AS updated_at, 1 AS version
-FROM (
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-)
-"""
-
-_merge_with_returning = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_returning_columns': ['id', 'name']}
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-_merge_custom_clauses = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': [
-            {'action': 'update', 'mode': 'by_name', 'condition': 'DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age'},
-            {'action': 'delete', 'condition': 'DBT_INTERNAL_SOURCE.job = \\'Manager\\''}
-        ],
-        'when_not_matched': [
-            {'action': 'insert', 'mode': 'by_name', 'condition': 'DBT_INTERNAL_SOURCE.age > 25'}
-        ]
-    }}
-) }}
-
-{% if is_incremental() %}
-SELECT 1 AS id, 'Alice Updated' AS name, 26 AS age, 'Senior Engineer' AS job
-UNION ALL
-SELECT 4 AS id, 'Diana' AS name, 28 AS age, 'Designer' AS job
-{% else %}
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-UNION ALL
-SELECT 2 AS id, 'Bob' AS name, 30 AS age, 'Manager' AS job
-UNION ALL
-SELECT 3 AS id, 'Charlie' AS name, 35 AS age, 'Director' AS job
-{% endif %}
-"""
-
-# Validation test models
-_merge_invalid_condition_type = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_update_condition': 123}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_invalid_columns_type = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-merge_update_columns=var('columns', 'not_a_list')
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_invalid_set_expressions_type = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_update_set_expressions': ['not', 'a', 'dict']}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_conflicting_configs = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_update_condition': "age > 25",
-'merge_clauses': {
-        'when_matched': [{'action': 'update', 'mode': 'by_name'}]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_invalid_clauses_type = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': 'not_a_dict'}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_empty_clauses = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {}}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_invalid_clause_list = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': 'not_a_list'
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_invalid_clause_element = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': ['not_a_dict']
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-# DuckLake restriction test models
-_merge_ducklake_multiple_updates = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': [
-            {'action': 'update', 'mode': 'by_name', 'condition': 'DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age'},
-            {'action': 'update', 'mode': 'explicit', 'update': {'include': ['name']}, 'condition': 'DBT_INTERNAL_SOURCE.name != DBT_INTERNAL_DEST.name'}
-        ],
-        'when_not_matched': [
-            {'action': 'insert', 'mode': 'by_name'}
-        ]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_ducklake_update_delete = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': [
-            {'action': 'update', 'mode': 'by_name', 'condition': 'DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age'},
-            {'action': 'delete', 'condition': 'DBT_INTERNAL_SOURCE.job = \\'Manager\\''}
-        ],
-        'when_not_matched': [
-            {'action': 'insert', 'mode': 'by_name'}
-        ]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_ducklake_cross_clause_actions = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': [
-            {'action': 'update', 'mode': 'by_name'}
-        ],
-        'when_not_matched': [
-            {'by': 'source', 'action': 'delete'}
-        ]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_ducklake_multiple_not_matched_actions = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_not_matched': [
-            {'by': 'source', 'action': 'update', 'set_expressions': {'name': "'Missing'"}},
-            {'by': 'source', 'action': 'delete'}
-        ]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
-
-_merge_ducklake_valid_single_update = """
-{{ config(
-materialized='incremental',
-incremental_strategy='merge',
-unique_key='id',
-meta={'merge_clauses': {
-        'when_matched': [
-            {'action': 'update', 'mode': 'by_name', 'condition': 'DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age'}
-        ],
-        'when_not_matched': [
-            {'action': 'insert', 'mode': 'by_name'}
-        ]
-    }}
-) }}
-
-SELECT 1 AS id, 'Alice' AS name, 25 AS age, 'Engineer' AS job
-"""
+from dbt_common.exceptions import CompilationError
 
 
 class TestIncrementalMerge:
-    """Test class for DuckDB merge incremental strategy configurations"""
-
     @pytest.fixture(scope="class")
     def models(self):
         return {
-            "merge_basic_update.sql": _merge_basic_update,
-            "merge_with_conditions.sql": _merge_with_conditions,
-            "merge_with_update_columns.sql": _merge_with_update_columns,
-            "merge_with_exclude_columns.sql": _merge_with_exclude_columns,
-            "merge_with_set_expressions.sql": _merge_with_set_expressions,
-            "merge_with_returning.sql": _merge_with_returning,
-            "merge_custom_clauses.sql": _merge_custom_clauses,
+            "merged.sql": """
+{{ config(materialized='incremental', incremental_strategy='merge', unique_key='id',
+          merge_update_columns=var('update_columns', none),
+          merge_exclude_columns=var('exclude_columns', none),
+          meta=var('merge', {})) }}
+select *, updated_at: current_timestamp, version: 1 from (
+{% if is_incremental() %}
+    select id: 1, name: 'Alice Updated', age: 26, job: 'Senior Engineer'
+    union all select 2, 'Bob Rejected', 29, 'Manager'
+    union all select 4, 'Diana', 28, 'Designer'
+    union all select 5, 'Eric Rejected', 20, 'Intern'
+{% else %}
+    select id: 1, name: 'Alice', age: 25, job: 'Engineer'
+    union all select 2, 'Bob', 30, 'Manager'
+    union all select 3, 'Charlie', 35, 'Director'
+{% endif %}
+) changes
+"""
         }
 
-    def test_merge_basic_update(self, project):
-        """Test basic merge functionality with default update behavior"""
-        # Initial run
-        run_dbt(["run", "--select", "merge_basic_update"], expect_pass=True)
+    @pytest.fixture
+    def initial_target(self, project):
+        # Start each scenario with a valid target. Invalid configuration must not
+        # be required to pass an earlier build or a full refresh.
+        run_dbt(["run", "--full-refresh"])
+        return relation_from_name(project.adapter, "merged")
 
-        # Verify initial data
-        relation = relation_from_name(project.adapter, "merge_basic_update")
-        result = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
-        )
-        assert result[0] == 3
+    def test_default_merge(self, project, initial_target):
+        run_dbt(["run"])
+        assert project.run_sql(
+            f"select id, name, age, job from {initial_target} order by id", fetch="all"
+        ) == [
+            (1, "Alice Updated", 26, "Senior Engineer"),
+            (2, "Bob Rejected", 29, "Manager"),
+            (3, "Charlie", 35, "Director"),
+            (4, "Diana", 28, "Designer"),
+            (5, "Eric Rejected", 20, "Intern"),
+        ]
 
-        # Incremental run - should update Alice and insert Diana
-        run_dbt(["run", "--select", "merge_basic_update"], expect_pass=True)
+    def test_update_and_insert_conditions(self, project, initial_target):
+        options = {
+            "merge_update_condition": "DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age",
+            "merge_insert_condition": "DBT_INTERNAL_SOURCE.age > 25",
+        }
+        run_dbt(["run", "--vars", json.dumps({"merge": options})])
+        assert project.run_sql(
+            f"select id, name, age from {initial_target} order by id", fetch="all"
+        ) == [
+            (1, "Alice Updated", 26),
+            (2, "Bob", 30),
+            (3, "Charlie", 35),
+            (4, "Diana", 28),
+        ]
 
-        # Verify final data
-        result = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
-        )
-        assert result[0] == 4  # 3 original + 1 new (Diana)
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"update_columns": ["name", "age"]},
+            {"exclude_columns": ["job"]},
+        ],
+    )
+    def test_update_column_selection(self, project, initial_target, options):
+        run_dbt(["run", "--vars", json.dumps(options)])
+        assert project.run_sql(
+            f"select name, age, job from {initial_target} where id = 1", fetch="one"
+        ) == ("Alice Updated", 26, "Engineer")
 
-        # Check Alice was updated
-        alice = project.run_sql(
-            f"SELECT name FROM {relation} WHERE id = 1", fetch="one"
-        )
-        assert alice[0] == "Alice Updated"
-
-    def test_merge_with_conditions(self, project):
-        """Test merge with update and insert conditions"""
-        run_dbt(["run", "--select", "merge_with_conditions"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_with_conditions"], expect_pass=True)
-
-        relation = relation_from_name(project.adapter, "merge_with_conditions")
-        result = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
-        )
-        # Should have 4 rows (Diana should be inserted as age > 25)
-        assert result[0] == 4
-
-    def test_merge_with_update_columns(self, project):
-        """Test merge with specific update columns"""
-        run_dbt(["run", "--select", "merge_with_update_columns"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_with_update_columns"], expect_pass=True)
-
-        relation = relation_from_name(project.adapter, "merge_with_update_columns")
-        alice = project.run_sql(
-            f"SELECT name, age, job FROM {relation} WHERE id = 1", fetch="one"
-        )
-        assert alice == ("Alice Updated", 26, "Engineer")
-
-    def test_merge_with_exclude_columns(self, project):
-        """Test merge with excluded columns"""
-        run_dbt(["run", "--select", "merge_with_exclude_columns"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_with_exclude_columns"], expect_pass=True)
-
-        relation = relation_from_name(project.adapter, "merge_with_exclude_columns")
-        # Check that job column was not updated (excluded)
-        alice = project.run_sql(f"SELECT job FROM {relation} WHERE id = 1", fetch="one")
-        assert alice[0] == "Engineer"  # Should remain original value
-
-    def test_merge_with_set_expressions(self, project):
-        """Test merge with custom set expressions"""
-        run_dbt(["run", "--select", "merge_with_set_expressions"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_with_set_expressions"], expect_pass=True)
-
-        relation = relation_from_name(project.adapter, "merge_with_set_expressions")
-        # Check that custom expressions were applied
-        alice = project.run_sql(
-            f"SELECT version, updated_at FROM {relation} WHERE id = 1", fetch="one"
-        )
-        assert alice[0] == 2  # version should be incremented
-        assert alice[1] is not None  # updated_at should be set
+    def test_set_expressions(self, project, initial_target):
+        options = {
+            "merge_update_set_expressions": {
+                "updated_at": "CURRENT_TIMESTAMP",
+                "version": "COALESCE(DBT_INTERNAL_DEST.version, 0) + 1",
+            }
+        }
+        run_dbt(["run", "--vars", json.dumps({"merge": options})])
+        assert project.run_sql(
+            f"select id, version, updated_at is not null from {initial_target} order by id",
+            fetch="all",
+        ) == [(1, 2, True), (2, 2, True), (3, 1, True), (4, 1, True), (5, 1, True)]
 
     @pytest.mark.skip_database_type(
         "ducklake", reason="DuckLake does not support RETURNING"
     )
-    def test_merge_with_returning(self, project):
-        """Test merge with returning columns"""
-        run_dbt(["run", "--select", "merge_with_returning"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_with_returning"], expect_pass=True)
-
-        # This test mainly verifies the SQL compiles and runs without error
-        relation = relation_from_name(project.adapter, "merge_with_returning")
-        result = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
+    def test_returning(self, project, initial_target):
+        events = []
+        run_dbt(
+            [
+                "run",
+                "--vars",
+                json.dumps({"merge": {"merge_returning_columns": ["id", "name"]}}),
+            ],
+            callbacks=[events.append],
         )
-        assert result[0] == 4
+        # Materializations do not expose RETURNING rows. Check this semantic clause
+        # in the SQL actually executed, without snapshotting the whole statement.
+        merge_sql = [
+            event.data.sql.lower()
+            for event in events
+            if event.info.name == "SQLQuery" and "merge into" in event.data.sql.lower()
+        ]
+        assert any(re.search(r"\breturning\b", sql) for sql in merge_sql)
+        assert project.run_sql(
+            f"select count(*) from {initial_target}", fetch="one"
+        ) == (5,)
 
     @pytest.mark.skip_database_type(
         "ducklake", reason="DuckLake supports only one MERGE update or delete action"
     )
-    def test_merge_custom_clauses(self, project):
-        """Test merge with custom when_matched and when_not_matched clauses"""
-        run_dbt(["run", "--select", "merge_custom_clauses"], expect_pass=True)
-        run_dbt(["run", "--select", "merge_custom_clauses"], expect_pass=True)
-
-        relation = relation_from_name(project.adapter, "merge_custom_clauses")
-        # Alice should be updated (age condition met), Diana should be inserted (age > 25)
-        # Bob and Charlie remain unchanged (not in source data)
-        result = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation}", fetch="one"
-        )
-        assert result[0] == 4  # Original 3 + 1 (Diana inserted)
-
-        # Verify Alice was updated
-        alice = project.run_sql(
-            f"SELECT name FROM {relation} WHERE id = 1", fetch="one"
-        )
-        assert alice[0] == "Alice Updated"
-
-        # Verify Bob still exists (wasn't deleted because not in source data)
-        bob = project.run_sql(
-            f"SELECT COUNT(*) as count FROM {relation} WHERE id = 2", fetch="one"
-        )
-        assert bob[0] == 1
-
-
-class TestIncrementalMergeValidation:
-    """Test class for DuckDB merge configuration validation"""
-
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "merge_invalid_condition_type.sql": _merge_invalid_condition_type,
-            "merge_invalid_columns_type.sql": _merge_invalid_columns_type,
-            "merge_invalid_set_expressions_type.sql": _merge_invalid_set_expressions_type,
-            "merge_conflicting_configs.sql": _merge_conflicting_configs,
-            "merge_invalid_clauses_type.sql": _merge_invalid_clauses_type,
-            "merge_empty_clauses.sql": _merge_empty_clauses,
-            "merge_invalid_clause_list.sql": _merge_invalid_clause_list,
-            "merge_invalid_clause_element.sql": _merge_invalid_clause_element,
-            "merge_ducklake_returning.sql": _merge_with_returning,
-            "merge_ducklake_multiple_updates.sql": _merge_ducklake_multiple_updates,
-            "merge_ducklake_update_delete.sql": _merge_ducklake_update_delete,
-            "merge_ducklake_cross_clause_actions.sql": _merge_ducklake_cross_clause_actions,
-            "merge_ducklake_multiple_not_matched_actions.sql": _merge_ducklake_multiple_not_matched_actions,
-            "merge_ducklake_valid_single_update.sql": _merge_ducklake_valid_single_update,
+    def test_custom_clauses(self, project, initial_target):
+        options = {
+            "merge_clauses": {
+                "when_matched": [
+                    {
+                        "action": "update",
+                        "mode": "by_name",
+                        "condition": "DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age",
+                    },
+                    {
+                        "action": "delete",
+                        "condition": "DBT_INTERNAL_SOURCE.job = 'Manager'",
+                    },
+                ],
+                "when_not_matched": [
+                    {
+                        "action": "insert",
+                        "mode": "by_name",
+                        "condition": "DBT_INTERNAL_SOURCE.age > 25",
+                    },
+                ],
+            }
         }
+        run_dbt(["run", "--vars", json.dumps({"merge": options})])
+        assert project.run_sql(
+            f"select id, name from {initial_target} order by id", fetch="all"
+        ) == [(1, "Alice Updated"), (3, "Charlie"), (4, "Diana")]
 
-    def test_invalid_condition_type(self, project):
-        """Test validation fails for non-string condition"""
-        # First run creates the table
-        run_dbt(["run", "--select", "merge_invalid_condition_type"], expect_pass=True)
-        # Second run should trigger validation and fail
-        result = run_dbt(
-            ["run", "--select", "merge_invalid_condition_type"], expect_pass=False
-        )
-        assert "merge_update_condition must be a string, found: 123" in str(
-            result.results[0].message
-        )
-
-    @pytest.mark.parametrize("columns", ["not_a_list", False])
-    def test_invalid_columns_type(self, project, columns):
-        """Test validation fails for non-list columns"""
-        args = [
-            "run",
-            "--select",
-            "merge_invalid_columns_type",
-            "--vars",
-            f"{{columns: {columns}}}",
-        ]
-        run_dbt([*args, "--full-refresh"], expect_pass=True)
-        result = run_dbt(args, expect_pass=False)
-        assert "merge_update_columns must be a list" in str(result.results[0].message)
-
-    def test_invalid_set_expressions_type(self, project):
-        """Test validation fails for non-dict set expressions"""
-        run_dbt(
-            ["run", "--select", "merge_invalid_set_expressions_type"], expect_pass=True
-        )
-        result = run_dbt(
-            ["run", "--select", "merge_invalid_set_expressions_type"], expect_pass=False
-        )
-        assert (
-            "merge_update_set_expressions must be a dictionary, found: ['not', 'a', 'dict']"
-            in str(result.results[0].message)
-        )
-
-    def test_conflicting_configs(self, project):
-        """Test validation fails when mixing merge_clauses with basic configs"""
-        run_dbt(["run", "--select", "merge_conflicting_configs"], expect_pass=True)
-        result = run_dbt(
-            ["run", "--select", "merge_conflicting_configs"], expect_pass=False
-        )
-        assert "basic merge configurations will be ignored" in str(
-            result.results[0].message
-        )
-        assert "merge_update_condition" in str(result.results[0].message)
-
-    def test_invalid_clauses_type(self, project):
-        """Test validation fails for non-dict merge_clauses"""
-        run_dbt(["run", "--select", "merge_invalid_clauses_type"], expect_pass=True)
-        result = run_dbt(
-            ["run", "--select", "merge_invalid_clauses_type"], expect_pass=False
-        )
-        assert "merge_clauses must be a dictionary, found: not_a_dict" in str(
-            result.results[0].message
-        )
-
-    def test_empty_clauses(self, project):
-        """Test validation fails for empty merge_clauses"""
-        run_dbt(["run", "--select", "merge_empty_clauses"], expect_pass=True)
-        result = run_dbt(["run", "--select", "merge_empty_clauses"], expect_pass=False)
-        assert (
-            "must contain at least one of 'when_matched' or 'when_not_matched'"
-            in str(result.results[0].message)
-        )
-
-    def test_invalid_clause_list(self, project):
-        """Test validation fails for non-list clause values"""
-        run_dbt(["run", "--select", "merge_invalid_clause_list"], expect_pass=True)
-        result = run_dbt(
-            ["run", "--select", "merge_invalid_clause_list"], expect_pass=False
-        )
-        assert "when_matched must be a list" in str(result.results[0].message)
-
-    def test_invalid_clause_element(self, project):
-        """Test validation fails for non-dict clause elements"""
-        run_dbt(["run", "--select", "merge_invalid_clause_element"], expect_pass=True)
-        result = run_dbt(
-            ["run", "--select", "merge_invalid_clause_element"], expect_pass=False
-        )
-        assert "elements must be dictionaries, found: not_a_dict" in str(
-            result.results[0].message
-        )
-
-    @pytest.mark.skip_database_type(
-        "native", reason="This test validates a DuckLake-specific MERGE restriction"
-    )
-    def test_ducklake_returning(self, project):
-        """Test DuckLake restriction fails for RETURNING."""
-        run_dbt(["run", "--select", "merge_ducklake_returning"], expect_pass=True)
-        result = run_dbt(
-            ["run", "--select", "merge_ducklake_returning"], expect_pass=False
-        )
-        assert "DuckLake MERGE restrictions" in str(result.results[0].message)
-        assert "merge_returning_columns is not supported" in str(
-            result.results[0].message
-        )
-
-    @pytest.mark.skip_database_type(
-        "native", reason="This test validates a DuckLake-specific MERGE restriction"
-    )
     @pytest.mark.parametrize(
-        "model_name",
+        "options, message",
         [
-            "merge_ducklake_multiple_updates",
-            "merge_ducklake_update_delete",
-            "merge_ducklake_cross_clause_actions",
-            "merge_ducklake_multiple_not_matched_actions",
+            (
+                {"merge": {"merge_update_condition": 123}},
+                "merge_update_condition must be a string",
+            ),
+            ({"update_columns": "not_a_list"}, "merge_update_columns must be a list"),
+            ({"update_columns": False}, "merge_update_columns must be a list"),
+            (
+                {"merge": {"merge_update_set_expressions": ["not", "a", "dict"]}},
+                "merge_update_set_expressions must be a dictionary",
+            ),
+            (
+                {
+                    "merge": {
+                        "merge_update_condition": "age > 25",
+                        "merge_clauses": {
+                            "when_matched": [{"action": "update", "mode": "by_name"}]
+                        },
+                    }
+                },
+                "basic merge configurations will be ignored",
+            ),
+            (
+                {"merge": {"merge_clauses": "not_a_dict"}},
+                "merge_clauses must be a dictionary",
+            ),
+            (
+                {"merge": {"merge_clauses": {}}},
+                "must contain at least one of 'when_matched' or 'when_not_matched'",
+            ),
+            (
+                {"merge": {"merge_clauses": {"when_matched": "not_a_list"}}},
+                "when_matched must be a list",
+            ),
+            (
+                {"merge": {"merge_clauses": {"when_matched": ["not_a_dict"]}}},
+                "elements must be dictionaries",
+            ),
+            pytest.param(
+                {"merge": {"merge_returning_columns": ["id"]}},
+                "merge_returning_columns is not supported",
+                marks=pytest.mark.skip_database_type(
+                    "native", reason="DuckLake-specific restriction"
+                ),
+            ),
+            *[
+                pytest.param(
+                    {"merge": {"merge_clauses": clauses}},
+                    "Found 2 UPDATE/DELETE actions",
+                    marks=pytest.mark.skip_database_type(
+                        "native", reason="DuckLake-specific restriction"
+                    ),
+                )
+                for clauses in [
+                    {
+                        "when_matched": [
+                            {
+                                "action": "update",
+                                "mode": "by_name",
+                                "condition": "DBT_INTERNAL_SOURCE.age > 25",
+                            },
+                            {"action": "update", "mode": "by_name"},
+                        ]
+                    },
+                    {
+                        "when_matched": [
+                            {
+                                "action": "update",
+                                "mode": "by_name",
+                                "condition": "DBT_INTERNAL_SOURCE.age > 25",
+                            },
+                            {"action": "delete"},
+                        ]
+                    },
+                    {
+                        "when_matched": [{"action": "update", "mode": "by_name"}],
+                        "when_not_matched": [{"by": "source", "action": "delete"}],
+                    },
+                    {
+                        "when_not_matched": [
+                            {
+                                "by": "source",
+                                "action": "update",
+                                "set_expressions": {"name": "'Missing'"},
+                            },
+                            {"by": "source", "action": "delete"},
+                        ]
+                    },
+                ]
+            ],
         ],
     )
-    def test_ducklake_multiple_update_delete_actions(self, project, model_name):
-        """Test DuckLake restriction fails for multiple UPDATE/DELETE actions."""
-        run_dbt(["run", "--select", model_name], expect_pass=True)
-        result = run_dbt(["run", "--select", model_name], expect_pass=False)
-        assert "DuckLake MERGE restrictions" in str(result.results[0].message)
-        assert "Found 2 UPDATE/DELETE actions" in str(result.results[0].message)
+    def test_invalid_configuration_preserves_target(
+        self, project, initial_target, options, message
+    ):
+        try:
+            result = run_dbt(["run", "--vars", json.dumps(options)], expect_pass=False)
+        except (CompilationError, ParsingError) as error:
+            error_message = str(error)
+        else:
+            error_message = result.results[0].message
+        assert message in error_message
+        assert project.run_sql(
+            f"select id, name, age from {initial_target} order by id", fetch="all"
+        ) == [(1, "Alice", 25), (2, "Bob", 30), (3, "Charlie", 35)]
 
-    def test_ducklake_valid_single_update(self, project):
-        """Test DuckLake accepts single UPDATE action"""
-        run_dbt(
-            ["run", "--select", "merge_ducklake_valid_single_update"], expect_pass=True
-        )
-        run_dbt(
-            ["run", "--select", "merge_ducklake_valid_single_update"], expect_pass=True
-        )
-        # This should always pass, whether ducklake or not
+    def test_single_custom_update_action(self, project, initial_target):
+        options = {
+            "merge_clauses": {
+                "when_matched": [
+                    {
+                        "action": "update",
+                        "mode": "by_name",
+                        "condition": "DBT_INTERNAL_DEST.age < DBT_INTERNAL_SOURCE.age",
+                    }
+                ],
+                "when_not_matched": [{"action": "insert", "mode": "by_name"}],
+            }
+        }
+        run_dbt(["run", "--vars", json.dumps({"merge": options})])
+        assert project.run_sql(
+            f"select id, name from {initial_target} order by id", fetch="all"
+        ) == [
+            (1, "Alice Updated"),
+            (2, "Bob"),
+            (3, "Charlie"),
+            (4, "Diana"),
+            (5, "Eric Rejected"),
+        ]

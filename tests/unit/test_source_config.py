@@ -82,31 +82,9 @@ import pytest
         ),
     ],
 )
-def test_external_source_compilation(tmp_path, level, placement, options, expected):
-    (tmp_path / "models").mkdir()
-    (tmp_path / "dbt_project.yml").write_text(
+def test_external_source_compilation(cli_project, level, placement, options, expected):
+    (cli_project / "dbt_project.yml").write_text(
         "name: source_validation\nversion: '1.0'\nconfig-version: 2\nprofile: test\n"
-    )
-    (tmp_path / "profiles.yml").write_text(
-        json.dumps(
-            {
-                "test": {
-                    "target": "test",
-                    "outputs": {
-                        "test": {
-                            "type": "motherduck",
-                            "host": "127.0.0.1",
-                            "port": 1,
-                            "database": "unused",
-                            "schema": "main",
-                            "token": "unused",
-                            "connect_timeout": 1,
-                            "threads": 1,
-                        }
-                    },
-                },
-            }
-        )
     )
     source = {"name": "upstream", "schema": "main", "tables": [{"name": "events"}]}
     if level == "table" and placement is not None:
@@ -116,37 +94,25 @@ def test_external_source_compilation(tmp_path, level, placement, options, expect
         target["config"] = {"meta": options}
     elif placement is not None:
         target[placement] = options
-    (tmp_path / "models" / "sources.yml").write_text(
+    (cli_project / "models" / "sources.yml").write_text(
         json.dumps({"version": 2, "sources": [source]})
     )
-    (tmp_path / "models" / "model.sql").write_text(
+    (cli_project / "models" / "model.sql").write_text(
         "select * from {{ source('upstream', 'events') }}"
     )
-    result = subprocess.run(
-        [
-            str(Path(sys.executable).parent / "dbt"),
-            "compile",
-            "--no-partial-parse",
-            "--no-populate-cache",
-            "--no-introspect",
-            "--project-dir",
-            str(tmp_path),
-            "--profiles-dir",
-            str(tmp_path),
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env={**os.environ, "DBT_SEND_ANONYMOUS_USAGE_STATS": "false"},
+    code, output = invoke_dbt(
+        cli_project,
+        "compile",
+        "--no-partial-parse",
+        "--no-populate-cache",
+        "--no-introspect",
     )
-    output = result.stdout + result.stderr
     if expected is None:
-        assert result.returncode != 0
+        assert code != 0
         assert "Formatter unknown not recognized" in output
         return
-    assert result.returncode == 0, output
-    manifest = json.loads((tmp_path / "target" / "manifest.json").read_text())
+    assert code == 0, output
+    manifest = json.loads((cli_project / "target" / "manifest.json").read_text())
     assert (
         manifest["nodes"]["model.source_validation.model"]["compiled_code"]
         == f"select * from {expected}"

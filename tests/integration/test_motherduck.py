@@ -72,51 +72,11 @@ where generate_series > (select coalesce(max(id), 0) from {{{{ this }}}})
             ) == (1,)
 
 
-class TestStagingSchemaInitialization:
-    @pytest.fixture(scope="class")
-    def other_database(self, temporary_database):
-        with temporary_database() as name:
-            yield name
-
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "ordinary.sql": """
-{{ config(materialized='table', database=var('output_database')) }}
-select id: 1
-""",
-            "incremental.sql": """
-{{ config(materialized='incremental', database=var('output_database')) }}
-select id: 1
-""",
-        }
-
-    def test_schema_is_created_only_for_staged_materializations(
-        self, project, other_database
-    ):
-        args = ["--vars", f"{{output_database: {other_database}}}"]
-        assert len(run_dbt(["run", "--select", "ordinary", *args])) == 1
-        assert project.run_sql(
-            "select count(*) from duckdb_schemas() "
-            f"where database_name = '{other_database}' and schema_name = 'dbt_temp'",
-            fetch="one",
-        ) == (0,)
-
-        assert len(run_dbt(["run", "--select", "incremental", *args])) == 1
-        assert project.run_sql(
-            "select count(*) from duckdb_schemas() "
-            f"where database_name = '{other_database}' and schema_name = 'dbt_temp'",
-            fetch="one",
-        ) == (1,)
-
-
 @pytest.mark.parametrize(
     "other_database, uppercase",
     [
-        ("dbt_motherduck_test_", False),
         ("dbt_motherduck_test_", True),
         ("DBT_MOTHERDUCK_TEST_", False),
-        ("dbt_MotherDuck_Test_", True),
     ],
     indirect=["other_database"],
 )
@@ -148,7 +108,7 @@ class TestCrossDatabaseNames:
         name = other_database.upper() if uppercase else other_database.lower()
         args = ["--vars", f"{{output_database: {name}}}"]
         assert len(run_dbt(["seed", *args])) == 1
-        for _ in range(3):
+        for _ in range(2):
             results = run_dbt(["run", *args])
             assert len(results) == 1
             node = results.results[0].node

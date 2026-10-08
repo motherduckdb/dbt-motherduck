@@ -1,7 +1,10 @@
 # Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
 # tests/functional/adapter/utils/test_date_spine.py.
+from datetime import date, timedelta
+
 import pytest
 from dbt.tests.util import (
+    relation_from_name,
     run_dbt,
 )
 
@@ -52,3 +55,7 @@ class TestDateSpine:
         results = run_dbt()
         # run result length
         assert len(results) == 1
+        relation = relation_from_name(project.adapter, "date_spine")
+        assert project.run_sql(
+            f"select date_day from {relation} order by date_day", fetch="all"
+        ) == [(date(2024, 1, 1) + timedelta(days=day),) for day in range(32)]
