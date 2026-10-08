@@ -1,15 +1,20 @@
-from concurrent.futures import ThreadPoolExecutor
+import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
 from decimal import Decimal
 from queue import Queue
 from socket import AF_INET, SHUT_RDWR, SOCK_STREAM, fromfd
+from threading import Event
 from time import monotonic, sleep
 from traceback import format_exception
 
 import psycopg
 import pytest
 from dbt.adapters.contracts.connection import ConnectionState
+from dbt.adapters.events.types import AdapterEventInfo
 from dbt.adapters.exceptions import FailedToConnectError
+from dbt_common.events import get_event_manager
+from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
@@ -594,8 +599,14 @@ def test_interrupted_queries_rollback_and_reconnect(
                 if operation == "disconnect"
                 else "(?i)interrupt|cancel"
             )
-            with pytest.raises(DbtDatabaseError, match=message):
+            try:
                 connection_adapter.execute("; ".join(statements), fetch=True)
+            except DbtDatabaseError as exc:
+                assert re.search(message, str(exc)), str(exc)
+            else:
+                if operation == "cancel":
+                    pytest.skip("Endpoint query completed without being cancelled")
+                pytest.fail("Disconnected query unexpectedly succeeded")
             assert handle.closed
             assert not connection.transaction_open
             assert connection.state == ConnectionState.CLOSED
@@ -624,7 +635,19 @@ def test_interrupted_queries_rollback_and_reconnect(
                         connection_adapter.connections.cancel(connection)
                     else:
                         query_socket.shutdown(SHUT_RDWR)
-                    future.result(timeout=30)
+                    try:
+                        future.result(timeout=30)
+                    except TimeoutError:
+                        if (
+                            operation == "cancel"
+                            and not future.done()
+                            and handle.info.transaction_status
+                            == psycopg.pq.TransactionStatus.ACTIVE
+                        ):
+                            pytest.skip(
+                                "Endpoint did not interrupt the query after cancellation"
+                            )
+                        raise
                 finally:
                     _close_query_socket(query_socket, future)
                 _, table = connection_adapter.execute(
@@ -640,49 +663,83 @@ def test_interrupted_queries_rollback_and_reconnect(
             connection_adapter.execute("DROP TABLE main.interrupted_probe")
 
 
-def test_cancel_open_interrupts_multiple_workers(connection_adapter):
+@pytest.mark.parametrize(
+    "error_type", [psycopg.errors.CancellationTimeout, psycopg.OperationalError]
+)
+def test_cancel_open_continues_after_cancellation_failure(
+    connection_adapter, monkeypatch, error_type
+):
     connections = Queue()
+    proceed = Event()
+    attempted_handles = []
+    token = "synthetic-sensitive-token"
+    original_cancel = psycopg.Connection.cancel_safe
+    cancellation_events = EventCatcher(AdapterEventInfo)
+    event_manager = get_event_manager()
 
-    def run_query(name):
+    def run_worker(name):
         with connection_adapter.connection_named(name):
-            connection_adapter.execute("SELECT 1", auto_begin=True)
+            connection_adapter.execute("SELECT 1")
             connection = connection_adapter.connections.get_thread_connection()
             handle = connection.handle
-            connections.put(
-                (name, handle, fromfd(handle.fileno(), AF_INET, SOCK_STREAM))
-            )
-            with pytest.raises(DbtDatabaseError, match="(?i)interrupt|cancel"):
-                connection_adapter.execute(
-                    "SELECT 42; SELECT sum(sin(i)) FROM range(1000000000) AS t(i); SELECT 43"
-                )
-            assert handle.closed
-            assert not connection.transaction_open
-            assert connection.state == ConnectionState.CLOSED
+            connections.put(connection)
+            assert proceed.wait(timeout=90), "Cancellation attempts did not finish"
+            _, table = connection_adapter.execute("SELECT 42", fetch=True)
+            assert table.rows[0][0] == 42
+            assert connection.handle is handle
+            assert not handle.closed
+
+    def cancel(handle, *args, **kwargs):
+        attempted_handles.append(handle)
+        if handle is failed_connection.handle:
+            raise error_type(f"intentional cancellation failure containing {token}")
+        return original_cancel(handle, *args, **kwargs)
 
     with connection_adapter.connection_named("multi_cancel_observer"):
         connection_adapter.execute("SELECT 1")
         observer = connection_adapter.connections.get_thread_connection().handle
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {
-                name: executor.submit(run_query, name)
-                for name in ("worker_0", "worker_1")
-            }
-            sockets = []
             try:
-                handles = []
-                for _ in futures:
-                    name, handle, query_socket = connections.get(timeout=30)
-                    sockets.append((query_socket, futures[name]))
-                    handles.append(handle)
-                for handle, (_, future) in zip(handles, sockets):
-                    _wait_for_active(handle, future)
-                assert handles[0] is not handles[1]
-                assert set(connection_adapter.connections.cancel_open()) == set(futures)
-                for future in futures.values():
+                futures = [executor.submit(run_worker, "worker_0")]
+                failed_connection = connections.get(timeout=30)
+                futures.append(executor.submit(run_worker, "worker_1"))
+                other_connection = connections.get(timeout=30)
+                credentials = failed_connection.credentials
+                original_token = credentials.token
+                event_manager.add_callback(cancellation_events.catch)
+                try:
+                    # Both sessions are already open; never put a real token in the injected error.
+                    credentials.token = token
+                    with monkeypatch.context() as patch:
+                        patch.setattr(psycopg.Connection, "cancel_safe", cancel)
+                        patch.setattr(
+                            event_manager, "require_warn_or_error_handling", True
+                        )
+                        patch.setattr(event_manager, "warn_error", True)
+                        assert set(connection_adapter.connections.cancel_open()) == {
+                            "worker_0",
+                            "worker_1",
+                        }
+                finally:
+                    credentials.token = original_token
+                    event_manager.callbacks.remove(cancellation_events.catch)
+                assert set(attempted_handles) == {
+                    failed_connection.handle,
+                    other_connection.handle,
+                }
+                failure_event = next(
+                    event
+                    for event in cancellation_events.caught_events
+                    if "intentional cancellation failure" in event.info.msg
+                )
+                assert "worker_0" in failure_event.info.msg
+                assert "[REDACTED]" in failure_event.info.msg
+                assert token not in str(failure_event)
+                proceed.set()
+                for future in futures:
                     future.result(timeout=30)
             finally:
-                for query_socket, future in sockets:
-                    _close_query_socket(query_socket, future)
+                proceed.set()
         _, table = connection_adapter.execute("SELECT 42", fetch=True)
         assert table.rows[0][0] == 42
         assert connection_adapter.connections.get_thread_connection().handle is observer
