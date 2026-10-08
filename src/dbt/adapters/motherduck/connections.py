@@ -333,20 +333,11 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             pending_databases = requested_databases.keys() - attached_database_names
             if not pending_databases:
                 return
-            available_databases = cursor.execute(
-                "select alias from md_all_databases()"
-            ).fetchall()
-            database_aliases = {
-                row[0].casefold(): row[0] for row in available_databases
-            }
             for key in sorted(pending_databases):
-                if key not in database_aliases:
-                    raise psycopg.OperationalError(
-                        f"MotherDuck database '{requested_databases[key]}' does not exist or is not accessible"
-                    )
+                # Let ATTACH resolve databases and shares and validate access.
                 cursor.execute(
                     pg_sql.SQL("attach {}").format(
-                        pg_sql.Literal(f"md:{database_aliases[key]}")
+                        pg_sql.Literal(f"md:{requested_databases[key]}")
                     )
                 )
 

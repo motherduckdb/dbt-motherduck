@@ -43,11 +43,11 @@ class TestConfiguredAttachments:
                 "select current_setting('motherduck_attach_mode'), current_database()"
             ).fetchone() == ("single", adapter.config.credentials.database)
             attached = [
-                row[0]
+                row[0].casefold()
                 for row in handle.execute("select alias from md_attached_databases()")
             ]
-            assert attached.count(other_database) == 1
-            assert unrelated_database not in attached
+            assert attached.count(other_database.casefold()) == 1
+            assert unrelated_database.casefold() not in attached
 
         with adapter.connection_named("attachments"):
             connection = adapter.connections.get_thread_connection()
