@@ -32,6 +32,7 @@ packages = ["src/dbt"]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 markers = [
+    "ecosystem: runs a third-party dbt package from the Hub against the adapter",
     "integration: requires a live MotherDuck PostgreSQL endpoint",
     "unit: does not require a database",
     "skip_database_type(*types, reason): excludes unsupported database types",
