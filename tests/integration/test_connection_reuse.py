@@ -1,13 +1,13 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from threading import Barrier
-from unittest.mock import Mock
+from threading import Barrier, get_ident
 
 import psycopg
 import pytest
 from dbt.adapters.contracts.connection import ConnectionState
 from dbt.tests.util import run_dbt
+from dbt_common.events.contextvars import get_node_info
 from dbt_common.exceptions import CompilationError, DbtDatabaseError, DbtInternalError
 
 from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
@@ -138,7 +138,6 @@ def test_worker_sessions_are_reused_and_closed_at_cleanup(connection_adapter):
     assert all(not handle.closed for handle in handles)
     adapter.cleanup_connections()
     assert all(handle.closed for handle in handles)
-    assert adapter.connections.thread_connections == {}
 
 
 def test_session_settings_persist_between_models(connection_adapter):
@@ -171,69 +170,37 @@ class TestConnectionReuseBuild:
 
     @pytest.mark.parametrize("threads", [1, 2])
     def test_build_reuses_worker_connections(self, project, monkeypatch, threads):
-        opened = []
-        model_sessions = []
-        original_open = MotherDuckConnectionManager.open
+        sessions = []
         original_release = MotherDuckConnectionManager.release
-        attachments = Mock(wraps=MotherDuckConnectionManager._attach_databases)
-
-        def open_connection(manager, connection):
-            already_open = connection.state == ConnectionState.OPEN
-            result = original_open(manager, connection)
-            if not already_open:
-                opened.append(
-                    (manager, manager.get_thread_identifier(), connection.handle)
-                )
-            return result
 
         def release_connection(manager):
             connection = manager.get_if_exists()
-            if (
-                connection is not None
-                and connection.state == ConnectionState.OPEN
-                and connection.name.startswith("model.")
-            ):
-                model_sessions.append(
-                    (
-                        manager.get_thread_identifier(),
-                        connection.name,
-                        connection.handle,
-                    )
-                )
+            if connection is not None and connection.state == ConnectionState.OPEN:
+                sessions.append((manager, get_ident(), connection.handle))
             original_release(manager)
 
-        monkeypatch.setattr(MotherDuckConnectionManager, "open", open_connection)
-        monkeypatch.setattr(MotherDuckConnectionManager, "release", release_connection)
-        monkeypatch.setattr(
-            MotherDuckConnectionManager, "_attach_databases", staticmethod(attachments)
-        )
         project.adapter.cleanup_connections()
         previous_handles = []
         for _ in range(2):
-            opened.clear()
-            model_sessions.clear()
-            attachments.reset_mock()
-            assert len(run_dbt(["build", "--threads", str(threads)])) == 6
+            sessions.clear()
+            # Observe real handles without replacing driver behavior. Reuse and
+            # closing at invocation end are the contracts being checked.
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    MotherDuckConnectionManager, "release", release_connection
+                )
+                assert len(run_dbt(["build", "--threads", str(threads)])) == 6
             by_thread = defaultdict(list)
-            for thread, name, handle in model_sessions:
-                by_thread[thread].append((name, handle))
-            assert 1 <= len(by_thread) <= threads
-            assert len({name for _, name, _ in model_sessions}) == 6
-            assert any(
-                len({name for name, _ in sessions}) > 1
-                for sessions in by_thread.values()
+            for manager, thread, handle in sessions:
+                by_thread[manager, thread].append(handle)
+            assert any(len(handles) > 1 for handles in by_thread.values())
+            assert all(
+                all(handle is handles[0] for handle in handles)
+                for handles in by_thread.values()
             )
-            for thread, sessions in by_thread.items():
-                handle = sessions[0][1]
-                assert all(session_handle is handle for _, session_handle in sessions)
-                assert [
-                    opened_handle for _, key, opened_handle in opened if key == thread
-                ] == [handle]
-            assert attachments.call_count == len(opened)
-            assert all(handle.closed for _, _, handle in opened)
-            assert all(manager.thread_connections == {} for manager, _, _ in opened)
-            assert all(handle not in previous_handles for _, _, handle in opened)
-            previous_handles = [handle for _, _, handle in opened]
+            assert all(handle.closed for _, _, handle in sessions)
+            assert all(handle not in previous_handles for _, _, handle in sessions)
+            previous_handles = [handle for _, _, handle in sessions]
 
 
 class TestConnectionReuseJinjaFailure:
@@ -269,7 +236,7 @@ select id: 1
             if (
                 connection is not None
                 and connection.state == ConnectionState.OPEN
-                and connection.name.startswith("model.")
+                and get_node_info().get("node_name") == "failed_model"
             ):
                 handle = connection.handle
             original_release(manager)

@@ -147,3 +147,85 @@ select id: 1, note: 'main'
                     )
                     for row in catalog.rows
                 ] == expected
+
+
+def test_external_source_columns(project):
+    relation = project.adapter.Relation.create(
+        database=project.database,
+        schema=project.test_schema,
+        identifier="external_without_catalog_table",
+        external="range(3)",
+    )
+    with project.adapter.connection_named("external_columns"):
+        columns = project.adapter.get_columns_in_relation(relation)
+    assert [(column.name, column.dtype) for column in columns] == [("range", "BIGINT")]
+
+
+def test_missing_relation_columns(project):
+    relation = project.adapter.Relation.create(
+        database=project.database,
+        schema=project.test_schema,
+        identifier="does_not_exist",
+    )
+    with project.adapter.connection_named("missing_columns"):
+        project.adapter.execute("SELECT 1", auto_begin=True)
+        handle = project.adapter.connections.get_thread_connection().handle
+        assert project.adapter.get_columns_in_relation(relation) == []
+        assert not handle.closed
+        assert project.adapter.connections.get_thread_connection().transaction_open
+        _, table = project.adapter.execute("SELECT 2 AS answer", fetch=True)
+        assert table.rows[0][0] == 2
+
+
+class TestQuotedMetadata:
+    @pytest.fixture(scope="class")
+    def other_database(self, temporary_database):
+        with temporary_database(prefix="dbt_motherduck_test_quote'") as name:
+            yield name
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self, other_database):
+        return {"models": {"+database": other_database, "+schema": "sche'ma.with.dot"}}
+
+    @pytest.fixture(scope="class")
+    def models(self, database_type):
+        indexes = "[]" if database_type == "ducklake" else "[{'columns': ['id']}]"
+        return {
+            "quoted.sql": "{{ config(materialized='table', alias=\"ta'ble.with.dot\", indexes="
+            + indexes
+            + ") }} select id: 1"
+        }
+
+    def test_build_and_replace_quoted_names(
+        self, project, other_database, database_type
+    ):
+        for _ in range(2):
+            result = run_dbt(["run"])
+            node = result.results[0].node
+            relation = project.adapter.Relation.create(
+                database=node.database,
+                schema=node.schema,
+                identifier=node.alias,
+                type="table",
+            )
+            assert project.run_sql(f"select * from {relation}", fetch="all") == [(1,)]
+            with get_connection(project.adapter):
+                assert relation.schema in project.adapter.list_schemas(other_database)
+                assert (
+                    project.adapter.get_relation(
+                        database=relation.database,
+                        schema=relation.schema,
+                        identifier=relation.identifier,
+                    )
+                    is not None
+                )
+                columns = project.adapter.get_columns_in_relation(relation)
+                assert [(column.name, column.dtype) for column in columns] == [
+                    ("id", "INTEGER")
+                ]
+                if database_type == "native":
+                    handle = project.adapter.connections.get_thread_connection().handle
+                    assert handle.execute(
+                        "select count(*) from duckdb_indexes() where database_name = %s and schema_name = %s and table_name = %s",
+                        (relation.database, relation.schema, relation.identifier),
+                    ).fetchone() == (1,)

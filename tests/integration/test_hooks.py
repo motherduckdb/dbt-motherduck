@@ -91,3 +91,47 @@ select 1 as id
         assert project.run_sql(f"select value from {log}", fetch="all") == [(1,)]
         target = relation_from_name(project.adapter, "hooked")
         assert project.run_sql(f"select * from {target}", fetch="all") == [(1,)]
+
+
+class TestHooks:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "hooked.sql": """
+{{ config(materialized='table',
+    persist_docs={'relation': true, 'columns': true},
+    pre_hook=[{'sql': 'create table if not exists ' ~ this.schema ~ '.hook_log (value integer)', 'transaction': false},
+              'insert into ' ~ this.schema ~ '.hook_log values (1)'],
+    post_hook=['insert into ' ~ this.schema ~ '.hook_log values (2)',
+               {'sql': 'insert into ' ~ this.schema ~ '.hook_log values (3)', 'transaction': false}]) }}
+select 1 as id
+""",
+            "schema.yml": """
+version: 2
+models:
+  - name: hooked
+    description: "Table's comment; with punctuation"
+    columns:
+      - name: id
+        description: "Column's comment; with punctuation"
+""",
+        }
+
+    def test_hook_transactions(self, project):
+        run_dbt(["run"])
+        target = relation_from_name(project.adapter, "hook_log")
+        assert project.run_sql(
+            f"SELECT value FROM {target} ORDER BY value", fetch="all"
+        ) == [(1,), (2,), (3,)]
+        assert project.run_sql(
+            "SELECT comment FROM duckdb_tables() "
+            f"WHERE database_name = '{project.database}' AND schema_name = '{project.test_schema}' "
+            "AND table_name = 'hooked'",
+            fetch="one",
+        ) == ("Table's comment; with punctuation",)
+        assert project.run_sql(
+            "SELECT comment FROM duckdb_columns() "
+            f"WHERE database_name = '{project.database}' AND schema_name = '{project.test_schema}' "
+            "AND table_name = 'hooked' AND column_name = 'id'",
+            fetch="one",
+        ) == ("Column's comment; with punctuation",)

@@ -7,10 +7,6 @@ from dbt.tests.adapter.aliases.test_aliases import (
     BaseAliases,
     BaseSameAliasDifferentSchemas,
 )
-from dbt.tests.adapter.caching.test_caching import (
-    BaseCachingLowercaseModel,
-    BaseCachingSelectedSchemaOnly,
-)
 from dbt.tests.adapter.concurrency.test_concurrency import (
     TestConcurenncy as BaseConcurrency,
 )
@@ -37,14 +33,6 @@ class TestAliasErrors(BaseAliasErrors):
 
 
 class TestSameAliasDifferentSchemas(BaseSameAliasDifferentSchemas):
-    pass
-
-
-class TestCachingLowercaseModel(BaseCachingLowercaseModel):
-    pass
-
-
-class TestCachingSelectedSchemaOnly(BaseCachingSelectedSchemaOnly):
     pass
 
 

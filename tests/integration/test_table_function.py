@@ -137,6 +137,18 @@ class TestTableFunction:
         )
         column_names_pre_alter = [row[0] for row in result_pre_alter]
         assert column_names_pre_alter == ["a", "b", "c"]
+        assert project.run_sql(
+            f"select * from {relation_pre_alter} order by a", fetch="all"
+        ) == [(1, 2, 3), (4, 5, 6), (7, 8, 9)]
+        for model in (
+            "use_table_function_1_param",
+            "use_table_function_1_param_with_comma",
+            "use_table_function_2_params",
+        ):
+            relation = relation_from_name(project.adapter, model)
+            assert project.run_sql(f"select * from {relation}", fetch="all") == [
+                (4, 5, 6)
+            ]
 
         relation_post_alter = relation_from_name(
             project.adapter, "use_table_function_after_adding_column"
@@ -146,3 +158,6 @@ class TestTableFunction:
         )
         column_names_post_alter = [row[0] for row in result_post_alter]
         assert column_names_post_alter == ["a", "b", "c", "d"]
+        assert project.run_sql(
+            f"select * from {relation_post_alter} order by a", fetch="all"
+        ) == [(1, 2, 3, 42), (4, 5, 6, 42), (7, 8, 9, 42)]
