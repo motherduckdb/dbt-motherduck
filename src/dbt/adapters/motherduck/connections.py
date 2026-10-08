@@ -4,6 +4,7 @@ from time import perf_counter
 import psycopg
 import sqlparse
 from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
+from dbt.adapters.events.logging import AdapterLogger
 from dbt.adapters.events.types import ConnectionUsed, Rollback, SQLQuery, SQLQueryStatus
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
@@ -370,4 +371,15 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         return "".join(value for _, value in tokens)
 
     def cancel(self, connection):
-        connection.handle.cancel_safe()
+        # .cancel() is only called to cancel the whole dbt invocation
+        # handle cancellation failures so that it doesn't prevent cancellation attempts of other connections
+        try:
+            connection.handle.cancel_safe()
+        except Exception as exc:
+            message = str(exc).replace(connection.credentials.token, "[REDACTED]")
+            # log at info so --warn-error doesn't turn cancellation into a failure.
+            # --warn-error doesn't just log an error, it errors the process out
+            AdapterLogger("MotherDuck").info(
+                f"Could not cancel query on connection '{connection.name}': {message}. "
+                "The query may still be running; continuing with the remaining cancellation attempts."
+            )
