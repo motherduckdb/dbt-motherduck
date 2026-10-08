@@ -97,7 +97,7 @@ class MotherDuckAdapter(SQLAdapter):
         return staging
 
     def post_model_hook(self, config, context):
-        if context is not None:
+        if context is not None and not self.connections.invocation_canceled.is_set():  # pyright: ignore[reportAttributeAccessIssue]
             # A Jinja failure can leave the model transaction open. Cleanup must persist.
             self.connections.rollback_if_open()
             # SQL errors discard the session; reconnect only to perform cleanup.
