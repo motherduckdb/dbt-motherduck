@@ -1,5 +1,5 @@
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -548,30 +548,15 @@ def test_query_failure_discards_connection(connection_adapter):
     assert not connection_adapter.connections.get_thread_connection().transaction_open
 
 
-def test_cancel_idle_connection_remains_usable(connection_adapter):
-    with connection_adapter.connection_named("idle_cancel"):
-        connection_adapter.execute("SELECT 1")
-        connection = connection_adapter.connections.get_thread_connection()
-        handle = connection.handle
-        for _ in range(3):
-            connection_adapter.connections.cancel(connection)
-            _, table = connection_adapter.execute("SELECT 42", fetch=True)
-            assert table.rows[0][0] == 42
-            assert connection.handle is handle
-            assert not handle.closed
-
-
-@pytest.mark.parametrize(
-    "error_type", [psycopg.errors.CancellationTimeout, psycopg.OperationalError]
-)
-def test_cancel_open_continues_after_cancellation_failure(
+@pytest.mark.parametrize("error_type", [RuntimeError, psycopg.OperationalError])
+def test_cancel_open_continues_after_connection_close_failure(
     connection_adapter, monkeypatch, error_type
 ):
     connections = Queue()
     proceed = Event()
     attempted_handles = []
     token = "synthetic-sensitive-token"
-    original_cancel = psycopg.Connection.cancel_safe
+    original_close = psycopg.Connection.close
     cancellation_events = EventCatcher(AdapterEventInfo)
     event_manager = get_event_manager()
 
@@ -582,16 +567,15 @@ def test_cancel_open_continues_after_cancellation_failure(
             handle = connection.handle
             connections.put(connection)
             assert proceed.wait(timeout=90), "Cancellation attempts did not finish"
-            _, table = connection_adapter.execute("SELECT 42", fetch=True)
-            assert table.rows[0][0] == 42
-            assert connection.handle is handle
-            assert not handle.closed
+            with pytest.raises(DbtRuntimeError, match="invocation was cancelled"):
+                connection_adapter.execute("SELECT 42", fetch=True)
+        assert handle.closed
 
-    def cancel(handle, *args, **kwargs):
+    def close(handle, *args, **kwargs):
         attempted_handles.append(handle)
         if handle is failed_connection.handle:
-            raise error_type(f"intentional cancellation failure containing {token}")
-        return original_cancel(handle, *args, **kwargs)
+            raise error_type(f"intentional close failure containing {token}")
+        return original_close(handle, *args, **kwargs)
 
     with connection_adapter.connection_named("multi_cancel_observer"):
         connection_adapter.execute("SELECT 1")
@@ -609,7 +593,7 @@ def test_cancel_open_continues_after_cancellation_failure(
                     # Both sessions are already open; never put a real token in the injected error.
                     credentials.token = token
                     with monkeypatch.context() as patch:
-                        patch.setattr(psycopg.Connection, "cancel_safe", cancel)
+                        patch.setattr(psycopg.Connection, "close", close)
                         patch.setattr(
                             event_manager, "require_warn_or_error_handling", True
                         )
@@ -628,7 +612,7 @@ def test_cancel_open_continues_after_cancellation_failure(
                 failure_event = next(
                     event
                     for event in cancellation_events.caught_events
-                    if "intentional cancellation failure" in event.info.msg
+                    if "intentional close failure" in event.info.msg
                 )
                 assert "worker_0" in failure_event.info.msg
                 assert "[REDACTED]" in failure_event.info.msg
@@ -638,8 +622,8 @@ def test_cancel_open_continues_after_cancellation_failure(
                     future.result(timeout=30)
             finally:
                 proceed.set()
-        _, table = connection_adapter.execute("SELECT 42", fetch=True)
-        assert table.rows[0][0] == 42
+        with pytest.raises(DbtRuntimeError, match="invocation was cancelled"):
+            connection_adapter.execute("SELECT 42", fetch=True)
         assert connection_adapter.connections.get_thread_connection().handle is observer
         assert not observer.closed
 
@@ -647,8 +631,8 @@ def test_cancel_open_continues_after_cancellation_failure(
 @pytest.mark.parametrize(
     "operation, position",
     [
-        ("cancel", "single"),
-        ("cancel", "middle"),
+        ("close", "single"),
+        ("close", "middle"),
         ("disconnect", "single"),
         ("disconnect", "middle"),
     ],
@@ -675,18 +659,12 @@ def test_interrupted_queries_rollback_and_reconnect(
             connection = connection_adapter.connections.get_thread_connection()
             handle = connection.handle
             connections.put((connection, fromfd(handle.fileno(), AF_INET, SOCK_STREAM)))
-            message = (
-                "(?i)closed|connection|EOF|SSL|receive"
-                if operation == "disconnect"
-                else "(?i)interrupt|cancel"
-            )
+            message = "(?i)closed|connection|EOF|SSL|receive"
             try:
                 connection_adapter.execute("; ".join(statements), fetch=True)
             except DbtDatabaseError as exc:
                 assert re.search(message, str(exc)), str(exc)
             else:
-                if operation == "cancel":
-                    pytest.skip("Endpoint query completed without being cancelled")
                 pytest.fail("Disconnected query unexpectedly succeeded")
             assert handle.closed
             assert not connection.transaction_open
@@ -712,23 +690,11 @@ def test_interrupted_queries_rollback_and_reconnect(
                 handle = connection.handle
                 try:
                     _wait_for_active(handle, future)
-                    if operation == "cancel":
+                    if operation == "close":
                         connection_adapter.connections.cancel(connection)
                     else:
                         query_socket.shutdown(SHUT_RDWR)
-                    try:
-                        future.result(timeout=30)
-                    except TimeoutError:
-                        if (
-                            operation == "cancel"
-                            and not future.done()
-                            and handle.info.transaction_status
-                            == psycopg.pq.TransactionStatus.ACTIVE
-                        ):
-                            pytest.skip(
-                                "Endpoint did not interrupt the query after cancellation"
-                            )
-                        raise
+                    future.result(timeout=30)
                 finally:
                     _close_query_socket(query_socket, future)
                 _, table = connection_adapter.execute(

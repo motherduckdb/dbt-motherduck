@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from threading import Event
 from time import perf_counter
 
 import psycopg
@@ -22,6 +23,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
 
     def __init__(self, profile, mp_context):
         super().__init__(profile, mp_context)
+        self.invocation_canceled = Event()
         # dbt-motherduck connects to MotherDuck on single attach mode
         # https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/attach-modes/
         # this callback is set by the MotherDuckAdapter (which owns the connection) and
@@ -29,6 +31,10 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         self.databases_needed_callback = self._uninitialized_databases_needed
 
     def open(self, connection):
+        if self.invocation_canceled.is_set():
+            raise DbtRuntimeError(
+                "The dbt invocation was cancelled. No further MotherDuck connections will be opened."
+            )
         if connection.state == ConnectionState.OPEN:
             return connection
         credentials = connection.credentials
@@ -48,6 +54,17 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
                 autocommit=True,
             )
+
+            # register the handle before any queries run so canceling the invocation
+            # can close the connection
+            with self.lock:
+                if self.invocation_canceled.is_set():
+                    handle.close()
+                    raise DbtRuntimeError(
+                        "The dbt invocation was cancelled. No further MotherDuck connections will be opened."
+                    )
+                connection.handle = handle
+                connection.state = ConnectionState.OPEN
             self._attach_databases(handle, databases)
         except psycopg.Error as exc:
             if handle is not None:
@@ -56,8 +73,6 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             connection.state = ConnectionState.FAIL
             message = str(exc).replace(credentials.token, "[REDACTED]")
             raise FailedToConnectError(message) from None
-        connection.handle = handle
-        connection.state = ConnectionState.OPEN
         return connection
 
     def release(self):
@@ -73,6 +88,9 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             self.clear_thread_connection()
             return
         if connection.state != ConnectionState.OPEN:
+            return
+        if self.invocation_canceled.is_set():
+            self.cancel(connection)
             return
 
         try:
@@ -140,18 +158,33 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 self.clear_thread_connection()
             raise
 
+    def cancel_open(self):
+        # Stop late submissions before disconnecting workers; dbt then joins them.
+        self.invocation_canceled.set()
+        this_connection = self.get_if_exists()
+        names = []
+        with self.lock:
+            for connection in list(self.thread_connections.values()):
+                if connection is this_connection:
+                    continue
+                # Check state first: reading an INIT handle would open a lazy connection.
+                if connection.state == ConnectionState.OPEN:
+                    self.cancel(connection)
+                if connection.name is not None:
+                    names.append(connection.name)
+        return names
+
     def cancel(self, connection):
-        # .cancel() is only called to cancel the whole dbt invocation
-        # handle cancellation failures so that it doesn't prevent cancellation attempts of other connections
         try:
-            connection.handle.cancel_safe()
+            # direct close without explicit rollback to not wait for an active query
+            connection.handle.close()
+            connection.transaction_open = False
+            connection.state = ConnectionState.CLOSED
         except Exception as exc:
             message = str(exc).replace(connection.credentials.token, "[REDACTED]")
-            # log at info so --warn-error doesn't turn cancellation into a failure.
-            # --warn-error doesn't just log an error, it errors the process out
             AdapterLogger("MotherDuck").info(
-                f"Could not cancel query on connection '{connection.name}': {message}. "
-                "The query may still be running; continuing with the remaining cancellation attempts."
+                f"Could not close connection '{connection.name}' during cancellation: {message}. "
+                "Continuing cancelling the remaining connections."
             )
 
     def execute(self, sql, auto_begin=False, fetch=False, limit=None):
@@ -177,6 +210,10 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         retryable_exceptions=(),
         retry_limit=1,
     ):
+        if self.invocation_canceled.is_set():
+            raise DbtRuntimeError(
+                "The dbt invocation was cancelled. No further MotherDuck SQL will be executed."
+            )
         # we cannot send multiple queries as a single string because the endpoint tries to
         # prepare and bind all statements before executing any.
         # e.g. if we send "create table t; insert into table t;", the insert statement
