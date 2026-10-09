@@ -158,6 +158,17 @@ class MotherDuckAdapter(SQLAdapter):
         )
         return bool(table.rows and table.rows[0][0])
 
+    def get_columns_in_relation(self, relation):
+        # calls describe, which raises if relation is missing
+        # returning an empty list is just what the adapters do for legacy reasons
+        # https://github.com/duckdb/dbt-duckdb/pull/763
+        try:
+            return super().get_columns_in_relation(relation)
+        except DbtRuntimeError as exc:
+            if "does not exist" in str(exc).lower():
+                return []
+            raise
+
     @available.parse(lambda *a, **k: [])
     def get_column_schema_from_query(self, sql: str) -> list[MotherDuckColumn]:
         """Get a list of the column names and data types from the given sql.
