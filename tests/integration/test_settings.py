@@ -1,6 +1,7 @@
 import pytest
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.tests.util import relation_from_name, run_dbt
+from dbt_common.exceptions import DbtDatabaseError
 
 
 class TestProfileSettings:
@@ -66,6 +67,36 @@ class TestProfileSettings:
                 "Europe/Amsterdam",
                 False,
             )
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_settings_after_sql_error_or_reconnection(connection_adapter, disconnect):
+    adapter = connection_adapter
+    adapter.config.credentials.settings = {
+        "preserve_insertion_order": False,
+        "TimeZone": "Europe/Amsterdam",
+    }
+    with adapter.connection_named("settings"):
+        _, table = adapter.execute(
+            "select current_setting('preserve_insertion_order'), current_setting('TimeZone')",
+            fetch=True,
+        )
+        assert tuple(table.rows[0]) == (False, "Europe/Amsterdam")
+        adapter.execute("SET preserve_insertion_order = true; SET TimeZone = 'UTC'")
+        if disconnect:
+            adapter.connections.get_thread_connection().handle.close()
+            with pytest.raises(DbtDatabaseError, match="closed"):
+                adapter.execute("select 42")
+        else:
+            with pytest.raises(DbtDatabaseError, match="intentional settings failure"):
+                adapter.execute("select error('intentional settings failure')")
+    with adapter.connection_named("settings_reconnected"):
+        _, table = adapter.execute(
+            "select current_setting('preserve_insertion_order'), current_setting('TimeZone')",
+            fetch=True,
+        )
+        expected = (False, "Europe/Amsterdam") if disconnect else (True, "UTC")
+        assert tuple(table.rows[0]) == expected
 
 
 @pytest.mark.parametrize(

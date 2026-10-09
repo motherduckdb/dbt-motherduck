@@ -403,18 +403,21 @@ def test_pipeline_errors_preserve_cause_and_rollback(
             assert connection_adapter.config.credentials.token not in "".join(
                 format_exception(error.value)
             )
-            assert handle.closed
+            assert not handle.closed
             assert not connection.transaction_open
-            assert connection.state == ConnectionState.CLOSED
-        with connection_adapter.connection_named("pipeline_error_verify"):
+            assert connection.state == ConnectionState.OPEN
             _, table = connection_adapter.execute(
                 "SELECT count(*) FROM main.pipeline_error_probe", fetch=True
             )
             assert table.rows[0][0] == 0
             assert (
-                connection_adapter.connections.get_thread_connection().handle
-                is not handle
+                connection_adapter.connections.get_thread_connection().handle is handle
             )
+            _, table = connection_adapter.execute(
+                "SELECT answer: 42; SELECT answer: 43", auto_begin=True, fetch=True
+            )
+            assert table.rows[0][0] == 43
+            connection_adapter.commit_if_has_connection()
     finally:
         with connection_adapter.connection_named("pipeline_error_cleanup"):
             connection_adapter.execute("DROP TABLE main.pipeline_error_probe")
@@ -544,12 +547,13 @@ def test_driver_errors_redact_credentials(connection_adapter, monkeypatch, opera
         credentials.token = original_token
 
 
-def test_query_failure_discards_connection(connection_adapter):
+@pytest.mark.parametrize("auto_begin", [False, True])
+def test_query_failure_rolls_back_and_reuses_connection(connection_adapter, auto_begin):
     with connection_adapter.connection_named("query_failure"):
-        connection_adapter.execute("SELECT 1", auto_begin=True)
+        connection_adapter.execute("SET TimeZone = 'Europe/Amsterdam'")
+        connection_adapter.execute("SELECT 1", auto_begin=auto_begin)
         connection = connection_adapter.connections.get_thread_connection()
         handle = connection.handle
-        assert connection.transaction_open
         with pytest.raises(DbtDatabaseError) as error:
             connection_adapter.execute(
                 "SELECT * FROM dbt_motherduck_intentionally_missing_function()"
@@ -558,18 +562,25 @@ def test_query_failure_discards_connection(connection_adapter):
         assert connection_adapter.config.credentials.token not in "".join(
             format_exception(error.value)
         )
-        assert handle.closed
-        assert connection.state == ConnectionState.CLOSED
+        assert not handle.closed
+        assert connection.state == ConnectionState.OPEN
         assert not connection.transaction_open
+        _, table = connection_adapter.execute(
+            "SELECT answer: 2, timezone: current_setting('TimeZone')",
+            auto_begin=True,
+            fetch=True,
+        )
+        assert tuple(table.rows[0]) == (2, "Europe/Amsterdam")
+        assert connection.handle is handle
     with connection_adapter.connection_named("after_failure"):
         _, table = connection_adapter.execute(
             "SELECT 2 AS answer", auto_begin=True, fetch=True
         )
-        replacement = connection_adapter.connections.get_thread_connection().handle
+        reused = connection_adapter.connections.get_thread_connection().handle
         assert connection_adapter.connections.get_thread_connection().transaction_open
-        assert replacement is not handle
+        assert reused is handle
         assert table.rows[0]["answer"] == 2
-    assert not replacement.closed
+    assert not reused.closed
     assert not connection_adapter.connections.get_thread_connection().transaction_open
 
 
