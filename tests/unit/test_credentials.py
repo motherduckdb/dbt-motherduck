@@ -16,6 +16,7 @@ def test_defaults():
     assert credentials.sslrootcert == "system"
     assert credentials.connect_timeout == 10
     assert credentials.attach_databases == []
+    assert credentials.settings == {}
 
 
 @pytest.mark.parametrize(
@@ -41,6 +42,13 @@ def test_defaults():
         {"attach_databases": ["other\x00"]},
         {"attach_databases": ["md:other"]},
         {"attach_databases": ["host=other-server"]},
+        {"settings": None},
+        {"settings": []},
+        {"settings": {"": False}},
+        {"settings": {1: False}},
+        {"settings": {"TimeZone": None}},
+        {"settings": {"TimeZone": "UTC\x00"}},
+        {"settings": {"TimeZone": ["UTC"]}},
     ],
 )
 def test_invalid_credentials(changes):
@@ -78,3 +86,27 @@ def test_attachment_names_round_trip():
         "other",
         "MixedCase",
     ]
+
+
+def test_settings_exposed_in_target(cli_project):
+    profiles_file = cli_project / "profiles.yml"
+    profiles = json.loads(profiles_file.read_text())
+    profiles["test"]["outputs"]["test"]["settings"] = {
+        "preserve_insertion_order": False,
+        "TimeZone": "Europe/Amsterdam",
+        "custom_setting": 7,
+    }
+    profiles_file.write_text(json.dumps(profiles))
+    (cli_project / "models" / "settings.sql").write_text(
+        "select insertion_order: {{ target.settings.preserve_insertion_order | lower }}, "
+        "time_zone: '{{ target.settings.TimeZone }}', "
+        "custom: {{ target.settings.custom_setting }}"
+    )
+    code, output = invoke_dbt(
+        cli_project, "compile", "--no-populate-cache", "--no-introspect"
+    )
+    assert code == 0, output
+    manifest = json.loads((cli_project / "target" / "manifest.json").read_text())
+    assert manifest["nodes"]["model.cli_test.settings"]["compiled_code"] == (
+        "select insertion_order: false, time_zone: 'Europe/Amsterdam', custom: 7"
+    )
