@@ -101,7 +101,7 @@ class MotherDuckAdapter(SQLAdapter):
             try:
                 # A Jinja failure can leave the model transaction open.
                 self.connections.rollback_if_open()
-                # SQL errors discard the session; reconnect only to perform cleanup.
+                # Broken sessions need reconnecting before cleanup.
                 self.connections.open(self.connections.get_thread_connection())
                 self.drop_relation(context)
             except DbtDatabaseError as exc:

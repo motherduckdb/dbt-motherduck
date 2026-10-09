@@ -55,8 +55,9 @@ class TestConfiguredAttachments:
             unrelated = adapter.Relation.create(database=unrelated_database)
             adapter.is_ducklake(unrelated)
             check_session(original)
-            with pytest.raises(DbtDatabaseError, match="missing_attachment_table"):
-                adapter.execute("select * from missing_attachment_table")
+            original.close()
+            with pytest.raises(DbtDatabaseError, match="closed"):
+                adapter.execute("select 42")
             assert original.closed
             assert connection.state == ConnectionState.CLOSED
 

@@ -17,7 +17,7 @@ from dbt.tests.adapter.empty.test_empty import (
 from dbt.tests.adapter.relations.test_changing_relation_type import (
     BaseChangeRelationTypeValidator,
 )
-from dbt.tests.util import run_dbt
+from dbt.tests.util import relation_from_name, run_dbt
 from dbt_common.exceptions import CompilationError
 
 
@@ -50,3 +50,25 @@ class TestEmptyInlineSourceRef(BaseTestEmptyInlineSourceRef):
 
 class TestChangeRelationType(BaseChangeRelationTypeValidator):
     pass
+
+
+class TestMissingRelationColumns:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "column_probe.sql": """
+{% if execute %}
+  {% set missing = this.incorporate(path={'identifier': 'intentionally_missing_column_probe'}) %}
+  {% set columns = adapter.get_columns_in_relation(missing) %}
+  {% set probe = run_query('select answer: 42') %}
+  select answer: {{ probe.rows[0][0] }}, missing_columns: {{ columns | length }}
+{% else %}
+  select answer: 42, missing_columns: 0
+{% endif %}
+"""
+        }
+
+    def test_missing_column_lookup_allows_subsequent_query(self, project):
+        run_dbt(["run"])
+        relation = relation_from_name(project.adapter, "column_probe")
+        assert project.run_sql(f"select * from {relation}", fetch="all") == [(42, 0)]

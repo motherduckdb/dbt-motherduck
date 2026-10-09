@@ -328,10 +328,16 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         except psycopg.Error as exc:
             connection = self.get_thread_connection()
             message = str(exc).replace(connection.credentials.token, "[REDACTED]")
-            # Discard failed sessions rather than replaying SQL or reusing uncertain state.
-            connection.handle.close()
-            connection.transaction_open = False
-            connection.state = ConnectionState.CLOSED
+            handle = connection.handle
+            self.rollback_if_open()
+            # dbt logs rollback failures; never reuse a session left in an unsafe state.
+            if (
+                handle.closed
+                or handle.info.transaction_status != psycopg.pq.TransactionStatus.IDLE
+                or handle.pgconn.pipeline_status != psycopg.pq.PipelineStatus.OFF
+            ):
+                handle.close()
+                connection.state = ConnectionState.CLOSED
             raise DbtDatabaseError(message) from None
 
     @staticmethod
