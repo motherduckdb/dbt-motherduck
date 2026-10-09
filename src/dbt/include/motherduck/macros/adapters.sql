@@ -178,24 +178,6 @@
 {% endmacro %}
 
 {% macro motherduck__get_columns_in_relation(relation) -%}
-  {% if not relation.external %}
-  {# Missing relations return no columns without aborting an open transaction. #}
-  {% set exists_sql %}
-    select 1
-    from (
-      select database_name, schema_name, relation_name: table_name from duckdb_tables()
-      union all
-      select database_name, schema_name, relation_name: view_name from duckdb_views()
-    ) relations
-    where lower(database_name) = lower('{{ relation.database | replace("'", "''") }}')
-      and lower(schema_name) = lower('{{ relation.schema | replace("'", "''") }}')
-      and lower(relation_name) = lower('{{ relation.identifier | replace("'", "''") }}')
-    limit 1
-  {% endset %}
-  {% if run_query(exists_sql) | length == 0 %}
-    {{ return([]) }}
-  {% endif %}
-  {% endif %}
   {# DESCRIBE preserves exact type strings without a global catalog scan. #}
   {% call statement('get_columns_in_relation', fetch_result=True, auto_begin=False) %}
       select
