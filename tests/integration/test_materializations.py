@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from dbt.tests.util import run_dbt
+from dbt.tests.util import run_dbt, run_dbt_and_capture
 
 
 class TestSmokeProject:
@@ -147,3 +147,56 @@ select 1 as id, {{ var('value', 1) }} as value
             f'SELECT * FROM "{project.database}"."{project.test_schema}".changes',
             fetch="all",
         ) == [(1, 1)]
+
+
+class TestStagingCleanupFailures:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "cleanup_probe.sql": """
+{{ config(materialized='incremental', unique_key='id', incremental_strategy='merge',
+          post_hook=[{'sql': '{{ create_staging_view() }}', 'transaction': false}]
+                    if var('break_cleanup', false) else []) }}
+select id: 1, value: {{ var('value', 1) }}
+"""
+        }
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {
+            "create_staging_view.sql": """
+{% macro create_staging_view() %}
+  {% set staging = this.incorporate(path=adapter.get_temp_relation_path(this)) %}
+  {# Run after commit and normal cleanup: DROP TABLE must fail on this view. #}
+  create view {{ staging }} as select id: 1;
+  {% if var('fail', false) %}
+    select error('original post-commit hook failure');
+  {% endif %}
+{% endmacro %}
+"""
+        }
+
+    @pytest.mark.parametrize("model_fails", [False, True])
+    def test_cleanup_preserves_model_outcome(self, project, model_fails):
+        run_dbt(["run", "--full-refresh"])
+        results, logs = run_dbt_and_capture(
+            [
+                "run",
+                "--threads",
+                "1",
+                "--vars",
+                f"{{value: 2, break_cleanup: true, fail: {str(model_fails).lower()}}}",
+            ],
+            expect_pass=not model_fails,
+        )
+
+        assert "Could not clean up staging table" in logs
+        assert project.database in logs
+        if model_fails:
+            assert "original post-commit hook failure" in results.results[0].message
+            assert "Could not clean up staging table" not in results.results[0].message
+        target = f'"{project.database}"."{project.test_schema}".cleanup_probe'
+        # Both cases commit before the hook that creates the cleanup failure.
+        assert project.run_sql(f"select value from {target}", fetch="all") == [(2,)]
+        run_dbt(["run", "--vars", "{value: 3}"])
+        assert project.run_sql(f"select value from {target}", fetch="all") == [(3,)]

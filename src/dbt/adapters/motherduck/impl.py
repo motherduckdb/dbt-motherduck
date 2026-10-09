@@ -19,7 +19,7 @@ from dbt_common.contracts.constraints import (
     ConstraintType,
     ModelLevelConstraint,
 )
-from dbt_common.exceptions import DbtRuntimeError
+from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 from sqlparse import lexer
 
 from dbt.adapters.motherduck.column import MotherDuckColumn
@@ -98,11 +98,17 @@ class MotherDuckAdapter(SQLAdapter):
 
     def post_model_hook(self, config, context):
         if context is not None and not self.connections.invocation_canceled.is_set():  # pyright: ignore[reportAttributeAccessIssue]
-            # A Jinja failure can leave the model transaction open. Cleanup must persist.
-            self.connections.rollback_if_open()
-            # SQL errors discard the session; reconnect only to perform cleanup.
-            self.connections.open(self.connections.get_thread_connection())
-            self.drop_relation(context)
+            try:
+                # A Jinja failure can leave the model transaction open.
+                self.connections.rollback_if_open()
+                # SQL errors discard the session; reconnect only to perform cleanup.
+                self.connections.open(self.connections.get_thread_connection())
+                self.drop_relation(context)
+            except DbtDatabaseError as exc:
+                # dbt calls this hook from finally; preserve the materialization's outcome.
+                AdapterLogger("MotherDuck").warning(
+                    f"Could not clean up temporary table {context}: {exc}. "
+                )
 
     def commit_if_has_connection(self):
         connection = self.connections.get_if_exists()
