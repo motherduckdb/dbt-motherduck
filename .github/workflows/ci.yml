@@ -70,9 +70,6 @@ jobs:
     env:
       DBT_ENV_SECRET_MOTHERDUCK_TOKEN: ${{ secrets.DBT_ENV_SECRET_MOTHERDUCK_TOKEN }}
       MOTHERDUCK_INITIAL_DATABASE: ${{ vars.MOTHERDUCK_INITIAL_DATABASE }}
-      # The fixtures default to sslrootcert=system, which resolves to the CA path
-      # compiled into psycopg's bundled OpenSSL and does not exist on every platform.
-      MOTHERDUCK_SSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
       # Names the disposable databases. Includes the matrix leg because both legs
       # of a run share a run number.
       MOTHERDUCK_TEST_RUN_ID: >-

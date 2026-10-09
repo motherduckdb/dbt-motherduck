@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+import certifi
 from dbt.adapters.contracts.connection import Credentials
 from dbt_common.exceptions import DbtRuntimeError
 
@@ -11,7 +12,7 @@ class MotherDuckCredentials(Credentials):
     token: str = field(repr=False)
     port: int = 5432
     user: str = "postgres"
-    sslrootcert: str = "system"
+    sslrootcert: str = field(default_factory=certifi.where)
     connect_timeout: int = 240
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)

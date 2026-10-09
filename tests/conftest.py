@@ -72,7 +72,6 @@ def provisioning_profile_data():
         "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
         "schema": "main",
         "token": token,
-        "sslrootcert": os.environ.get("MOTHERDUCK_SSLROOTCERT", "system"),
         "threads": 2,
         "connect_timeout": 30,
     }
@@ -225,7 +224,6 @@ def drop_deferred_databases(names):
             "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
             "schema": "main",
             "token": token,
-            "sslrootcert": os.environ.get("MOTHERDUCK_SSLROOTCERT", "system"),
             "connect_timeout": 30,
         }
     )

@@ -366,6 +366,7 @@ name = "dbt-motherduck"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "dbt-adapters" },
     { name = "dbt-common" },
     { name = "dbt-core" },
@@ -385,6 +386,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi" },
     { name = "dbt-adapters", specifier = ">=1.24.5,<2" },
     { name = "dbt-common", specifier = ">=1.37.5,<2" },
     { name = "dbt-core", specifier = ">=1.12.5,<1.13" },

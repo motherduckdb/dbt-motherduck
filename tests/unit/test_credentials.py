@@ -1,5 +1,6 @@
 import json
 
+import certifi
 import pytest
 from dbt_common.exceptions import DbtRuntimeError
 
@@ -13,10 +14,24 @@ def test_defaults():
     )
     assert credentials.port == 5432
     assert credentials.user == "postgres"
-    assert credentials.sslrootcert == "system"
-    assert credentials.connect_timeout == 10
+    assert credentials.sslrootcert == certifi.where()
+    assert credentials.connect_timeout == 240
     assert credentials.attach_databases == []
     assert credentials.settings == {}
+
+
+@pytest.mark.parametrize("sslrootcert", ["system", "/path/to/custom-ca.pem"])
+def test_certificate_override(sslrootcert):
+    credentials = MotherDuckCredentials.from_dict(
+        {
+            "host": "example.com",
+            "token": "secret",
+            "database": "db",
+            "schema": "main",
+            "sslrootcert": sslrootcert,
+        }
+    )
+    assert credentials.sslrootcert == sslrootcert
 
 
 @pytest.mark.parametrize(
