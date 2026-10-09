@@ -40,6 +40,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         credentials = connection.credentials
         databases = self.databases_needed_callback()
         handle = None
+        setting_name = None
         try:
             handle = psycopg.connect(
                 host=credentials.host,
@@ -66,12 +67,25 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 connection.handle = handle
                 connection.state = ConnectionState.OPEN
             self._attach_databases(handle, databases)
+            with handle.cursor() as cursor:
+                for setting_name, value in credentials.settings.items():
+                    # Like dbt-duckdb, let DuckDB cast string values to setting types.
+                    cursor.execute(
+                        pg_sql.SQL("SET {} = {}").format(
+                            pg_sql.Identifier(setting_name), pg_sql.Literal(str(value))
+                        )
+                    )
         except psycopg.Error as exc:
             if handle is not None:
                 handle.close()
             connection.handle = None
             connection.state = ConnectionState.FAIL
-            message = str(exc).replace(credentials.token, "[REDACTED]")
+            message = str(exc)
+            if setting_name is not None:
+                message = (
+                    f"Could not apply MotherDuck setting {setting_name!r}: {message}"
+                )
+            message = message.replace(credentials.token, "[REDACTED]")
             raise FailedToConnectError(message) from None
         return connection
 

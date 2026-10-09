@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 from dbt.adapters.contracts.connection import Credentials
 from dbt_common.exceptions import DbtRuntimeError
@@ -13,6 +14,7 @@ class MotherDuckCredentials(Credentials):
     sslrootcert: str = "system"
     connect_timeout: int = 10
     attach_databases: list[str] = field(default_factory=list)
+    settings: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         for name in ("host", "token", "database", "schema", "user", "sslrootcert"):
@@ -42,6 +44,17 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError(
                 "attach_databases must be a list of non-empty database names, not connection strings"
             )
+        if not isinstance(self.settings, dict) or any(
+            not isinstance(name, str)
+            or not name.strip()
+            or "\x00" in name
+            or not isinstance(value, (str, bool, int, float))
+            or (isinstance(value, str) and "\x00" in value)
+            for name, value in self.settings.items()
+        ):
+            raise DbtRuntimeError(
+                "settings must be a mapping of non-empty setting names to string, boolean, or numeric values, without NUL characters"
+            )
 
     @property
     def type(self):
@@ -61,4 +74,5 @@ class MotherDuckCredentials(Credentials):
             "sslrootcert",
             "connect_timeout",
             "attach_databases",
+            "settings",
         )
