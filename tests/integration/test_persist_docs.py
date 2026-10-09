@@ -3,8 +3,10 @@
 import pytest
 from dbt.tests.adapter.persist_docs.test_persist_docs import (
     BasePersistDocs,
+    BasePersistDocsAllColumnsMissing,
     BasePersistDocsColumnMissing,
     BasePersistDocsCommentOnQuotedColumn,
+    BasePersistDocsQuotedDescriptionNotAppliedOnMismatch,
 )
 
 # DuckLake support is merged and will be available in a future release:
@@ -18,15 +20,19 @@ class TestPersistDocs(BasePersistDocs):
     pass
 
 
-@pytest.mark.skip_database_type(
-    "ducklake", reason="DuckLake does not support comments on view columns"
-)
 class TestPersistDocsColumnMissing(BasePersistDocsColumnMissing):
     pass
 
 
-@pytest.mark.skip_database_type(
-    "ducklake", reason="DuckLake does not support comments on view columns"
-)
+class TestPersistDocsAllColumnsMissing(BasePersistDocsAllColumnsMissing):
+    pass
+
+
 class TestPersistDocsCommentOnQuotedColumn(BasePersistDocsCommentOnQuotedColumn):
+    pass
+
+
+class TestPersistDocsQuotedDescriptionNotAppliedOnMismatch(
+    BasePersistDocsQuotedDescriptionNotAppliedOnMismatch
+):
     pass
