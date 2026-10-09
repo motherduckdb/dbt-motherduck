@@ -68,7 +68,7 @@ def provisioning_profile_data():
         pytest.skip("Set DBT_ENV_SECRET_MOTHERDUCK_TOKEN to run endpoint tests")
     return {
         "type": "motherduck",
-        "host": os.environ.get("MOTHERDUCK_HOST", "pg.us-east-1-aws.motherduck.com"),
+        "host": os.environ.get("MOTHERDUCK_PG_HOST", "pg.us-east-1-aws.motherduck.com"),
         "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
         "schema": "main",
         "token": token,
@@ -219,7 +219,7 @@ def drop_deferred_databases(names):
         {
             "type": "motherduck",
             "host": os.environ.get(
-                "MOTHERDUCK_HOST", "pg.us-east-1-aws.motherduck.com"
+                "MOTHERDUCK_PG_HOST", "pg.us-east-1-aws.motherduck.com"
             ),
             "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
             "schema": "main",
