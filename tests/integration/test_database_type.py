@@ -2,9 +2,12 @@
 # tests/functional/plugins/motherduck/test_motherduck_ducklake.py and
 # tests/functional/adapter/test_database_type.py.
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from dbt.tests.util import get_connection, run_dbt
+from dbt_common.events import get_event_manager
 
 
 class TestNonDefaultDatabaseType:
@@ -39,8 +42,49 @@ select id: 1, ds: 2
             adapter.execute(f"create table {target} as select id: 1")
             _, current = adapter.execute("select current_database()", fetch=True)
             assert current.rows[0][0] == primary.database
-            assert adapter.is_ducklake(primary) is (database_type == "ducklake")
-            assert adapter.is_ducklake(target) is (database_type == "native")
+
+        ready = Barrier(2)
+
+        def lookup(worker):
+            with adapter.connection_named(f"database_type_{worker}"):
+                _ = adapter.connections.get_thread_connection().handle
+                ready.wait(timeout=30)
+                return adapter.is_ducklake(primary), adapter.is_ducklake(target)
+
+        events = []
+        event_manager = get_event_manager()
+        event_manager.add_callback(events.append)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                assert (
+                    list(executor.map(lookup, range(2)))
+                    == [(database_type == "ducklake", database_type == "native")] * 2
+                )
+            assert sum(event.info.name == "SQLQuery" for event in events) <= 2
+
+            events.clear()
+            for relation, expected in (
+                (primary, database_type == "ducklake"),
+                (target, database_type == "native"),
+            ):
+                assert adapter.is_ducklake(relation) is expected
+                differently_cased = relation.incorporate(
+                    path={"database": relation.database.upper()}
+                )
+                assert adapter.is_ducklake(differently_cased) is expected
+            assert not any(event.info.name == "SQLQuery" for event in events)
+        finally:
+            event_manager.callbacks.remove(events.append)
+
+    def test_unattached_database_type_is_not_cached(
+        self, connection_adapter, database_type, other_database
+    ):
+        adapter = connection_adapter
+        relation = adapter.Relation.create(database=other_database)
+        with get_connection(adapter):
+            assert adapter.is_ducklake(relation) is False
+            adapter.execute(f"attach 'md:{other_database}'")
+            assert adapter.is_ducklake(relation) is (database_type == "native")
 
     def test_layout_and_drop_follow_target_database_type(
         self, project, database_type, other_database

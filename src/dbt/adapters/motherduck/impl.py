@@ -58,6 +58,8 @@ class MotherDuckAdapter(SQLAdapter):
         super().__init__(config, mp_context)
         # the ConnectionManager uses this callback to ask for a list of databases to attach
         self.connections.databases_needed_callback = self._get_databases_needed
+        self._ducklake_cache: dict[str, bool] = {}
+        self._ducklake_cache_lock = Lock()
         self._warnings = set()
         self._temp_relation_ids = defaultdict(lambda: uuid4().hex)
         # DuckDB / MotherDuck can run into write-write conflicts when running concurrent `create
@@ -156,13 +158,22 @@ class MotherDuckAdapter(SQLAdapter):
 
     @available
     def is_ducklake(self, relation):
-        database = relation.database.replace("'", "''")
-        _, table = self.execute(
-            "SELECT is_ducklake FROM md_attached_databases() "
-            f"WHERE lower(alias) = lower('{database}')",
-            fetch=True,
-        )
-        return bool(table.rows and table.rows[0][0])
+        key = relation.database.lower()
+        with self._ducklake_cache_lock:
+            if key in self._ducklake_cache:
+                return self._ducklake_cache[key]
+            database = relation.database.replace("'", "''")
+            _, table = self.execute(
+                "SELECT is_ducklake FROM md_attached_databases() "
+                f"WHERE lower(alias) = lower('{database}')",
+                fetch=True,
+            )
+            # if it doesn't exist / it's not attached yet don't cache type
+            if not table.rows:
+                return False
+            is_ducklake = bool(table.rows[0][0])
+            self._ducklake_cache[key] = is_ducklake
+            return is_ducklake
 
     def get_columns_in_relation(self, relation):
         # calls describe, which raises if relation is missing
