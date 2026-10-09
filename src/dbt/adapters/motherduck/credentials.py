@@ -12,7 +12,7 @@ class MotherDuckCredentials(Credentials):
     port: int = 5432
     user: str = "postgres"
     sslrootcert: str = "system"
-    connect_timeout: int = 10
+    connect_timeout: int = 240
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
 
