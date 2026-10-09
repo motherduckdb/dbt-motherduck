@@ -1,4 +1,5 @@
 import re
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from threading import Event
 from time import monotonic, sleep
 from traceback import format_exception
 
+import certifi
 import psycopg
 import pytest
 from dbt.adapters.contracts.connection import ConnectionState
@@ -64,6 +66,29 @@ def test_profile_and_connection(connection_adapter, test_database, admin_connect
     connection_adapter.cleanup_connections()
     assert handle.closed
     assert connection.state == ConnectionState.CLOSED
+
+
+def test_certificate_override_is_verified(connection_adapter, tmp_path):
+    credentials = connection_adapter.config.credentials
+    untrusted_bundle = tmp_path / "untrusted.pem"
+    untrusted_bundle.write_text("")
+    credentials.sslrootcert = str(untrusted_bundle)
+    with (
+        pytest.raises(FailedToConnectError, match="root certificate"),
+        connection_adapter.connection_named("untrusted_certificate"),
+    ):
+        connection_adapter.execute("select 42")
+
+    trusted_bundle = tmp_path / "trusted.pem"
+    shutil.copyfile(certifi.where(), trusted_bundle)
+    credentials.sslrootcert = str(trusted_bundle)
+    with connection_adapter.connection_named("trusted_certificate"):
+        _, table = connection_adapter.execute("select 42", fetch=True)
+        assert table.rows[0][0] == 42
+        connection = connection_adapter.connections.get_thread_connection()
+        parameters = connection.handle.info.get_parameters()
+        assert parameters["sslmode"] == "verify-full"
+        assert parameters["sslrootcert"] == str(trusted_bundle)
 
 
 def test_execute_converts_results(connection_adapter):
