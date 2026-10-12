@@ -312,9 +312,16 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # DuckDB DML returns a Count row; cursor.rowcount counts that result row.
         affected = cursor.pgresult.command_tuples
         code = status.split()[0]
-        # The endpoint reports UPDATE/DELETE 1 even when zero or many rows change.
-        if code in {"UPDATE", "DELETE"}:
-            status, affected = code, None
+        # UPDATE/DELETE tags count the result row, and MERGE has an UNKNOWN tag.
+        if code in {"UPDATE", "DELETE"} or (
+            code == "UNKNOWN"
+            and cursor.pgresult.nfields == 1
+            and cursor.pgresult.fname(0) == b"Count"
+        ):
+            count = cursor.pgresult.get_value(0, 0)
+            affected = int(count) if count is not None else None
+            if code != "UNKNOWN":
+                status = code
         return AdapterResponse(
             _message=status,
             code=code,
