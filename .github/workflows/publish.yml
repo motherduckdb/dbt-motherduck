@@ -1,0 +1,77 @@
+name: Publish
+run-name: Publish ${{ inputs.branch }} to ${{ inputs.deploy-to }} PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy-to:
+        description: PyPI repository to publish to
+        type: choice
+        options:
+          - test
+          - prod
+      branch:
+        description: Branch or tag to publish
+        type: string
+        default: main
+
+concurrency:
+  group: publish-${{ inputs.deploy-to }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.branch }}
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      - name: Install project and test dependencies
+        run: uv sync --locked
+      - name: Run unit tests
+        run: uv run --no-sync pytest -m unit
+      - name: Build distributions
+        run: uv build
+      - name: Check distributions
+        run: uvx --from "twine>=7,<8" twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.deploy-to }}
+      url: >-
+        ${{ inputs.deploy-to == 'prod'
+          && 'https://pypi.org/project/dbt-motherduck/'
+          || 'https://test.pypi.org/project/dbt-motherduck/' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          repository-url: >-
+            ${{ inputs.deploy-to == 'prod'
+              && 'https://upload.pypi.org/legacy/'
+              || 'https://test.pypi.org/legacy/' }}
+          packages-dir: dist/
