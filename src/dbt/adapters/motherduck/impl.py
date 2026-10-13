@@ -1,6 +1,7 @@
 # SQL helpers and staging hooks adapted from dbt-duckdb commit
 # acdab5dfc85715572bbf43fcf2b318a5ed1bfa16, dbt/adapters/duckdb/impl.py.
 from collections import defaultdict
+from datetime import date
 from threading import Lock
 from uuid import uuid4
 
@@ -221,7 +222,13 @@ class MotherDuckAdapter(SQLAdapter):
         for start in range(0, len(table.rows), batch_size):
             rows = table.rows[start : start + batch_size]
             sql = prefix + ", ".join([row_sql] * len(rows))
-            bindings = [value for row in rows for value in row]
+            # pg_endpoint cannot bind Python date/datetime values to an existing VARCHAR.
+            # Their strings also cast correctly into DATE, TIMESTAMP, and TIMESTAMPTZ.
+            bindings = [
+                str(value) if isinstance(value, date) else value
+                for row in rows
+                for value in row
+            ]
             _, cursor = self.connections.add_query(
                 sql, bindings=bindings, abridge_sql_log=True
             )

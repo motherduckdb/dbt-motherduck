@@ -70,6 +70,42 @@ class TestSeedTypes:
             ]
 
 
+class TestSeedDateTimeIntoExistingVarchar:
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {
+            "dates_as_text.csv": (
+                "id,event_date,event_at\n1,2025-01-02,2025-01-02 03:04:05.123456\n"
+            )
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "seeds": {
+                "test": {
+                    "dates_as_text": {
+                        "+column_types": {
+                            "event_date": "VARCHAR",
+                            "event_at": "VARCHAR",
+                        }
+                    }
+                }
+            }
+        }
+
+    def test_date_values_load_into_existing_varchar_columns(self, project):
+        relation = f'"{project.database}"."{project.test_schema}".dates_as_text'
+        run_dbt(["seed", "--full-refresh"])
+
+        update_config_file({"seeds": {}}, "dbt_project.yml")
+        run_dbt(["seed"])
+
+        assert project.run_sql(f"SELECT * FROM {relation}", fetch="all") == [
+            (1, "2025-01-02", "2025-01-02 03:04:05.123456")
+        ]
+
+
 class TestSeedInvalidDelimiter(SeedUniqueDelimiterTestBase):
     @pytest.fixture(scope="class", autouse=True)
     def setUp(self, project):
