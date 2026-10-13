@@ -1,5 +1,5 @@
 name: Publish
-run-name: Publish ${{ inputs.branch }} to ${{ inputs.deploy-to }} PyPI
+run-name: Publish ${{ inputs.branch }} to ${{ inputs.deploy-to }} PyPI as ${{ inputs.version || 'current version' }}
 
 on:
   workflow_dispatch:
@@ -14,6 +14,10 @@ on:
         description: Branch or tag to publish
         type: string
         default: main
+      version:
+        description: Target production version (for example, 0.1.0a1); omit for TestPyPI
+        type: string
+        default: ""
 
 concurrency:
   group: publish-${{ inputs.deploy-to }}
@@ -23,14 +27,163 @@ permissions:
   contents: read
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      release-notes: ${{ steps.version.outputs.release-notes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.branch }}
+      - name: Require a branch for production publishing
+        if: inputs.deploy-to == 'prod'
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: git ls-remote --exit-code --heads origin "$BRANCH"
+      - uses: astral-sh/setup-uv@v10
+        if: inputs.deploy-to == 'prod'
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      - name: Set package version
+        id: package
+        shell: bash
+        env:
+          DEPLOY_TO: ${{ inputs.deploy-to }}
+          TARGET_VERSION: ${{ inputs.version }}
+        run: |
+          initial=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          echo "initial=$initial" >> "$GITHUB_OUTPUT"
+
+          if [[ "$DEPLOY_TO" == "prod" ]]; then
+            if [[ -z "$TARGET_VERSION" ]]; then
+              echo "::error::A target version is required for production publishing."
+              exit 1
+            fi
+            if [[ "$initial" != "$TARGET_VERSION" ]]; then
+              uvx --from "hatch>=1.14,<2" hatch version "$TARGET_VERSION"
+            fi
+            uv lock
+          elif [[ -n "$TARGET_VERSION" ]]; then
+            echo "::warning::The version input is ignored for TestPyPI; publishing $initial."
+          fi
+
+          final=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [[ "$DEPLOY_TO" == "prod" && "$final" != "$TARGET_VERSION" ]]; then
+            echo "::error::Hatch normalized $TARGET_VERSION to $final; provide the canonical PEP 440 version."
+            exit 1
+          fi
+          echo "final=$final" >> "$GITHUB_OUTPUT"
+      - name: Get changelog version
+        id: version
+        shell: bash
+        env:
+          VERSION: ${{ steps.package.outputs.final }}
+        run: |
+          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+            base="${BASH_REMATCH[1]}"
+            prerelease="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+          elif [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+            base="${BASH_REMATCH[1]}"
+            prerelease="dev${BASH_REMATCH[2]}"
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            base="$VERSION"
+            prerelease=""
+          else
+            echo "::error::Unsupported package version for changelog generation: $VERSION"
+            exit 1
+          fi
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          if [[ -n "$prerelease" ]]; then
+            echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}-${prerelease}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}.md" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check for existing release notes and staged prerelease entries
+        id: changes
+        shell: bash
+        env:
+          BASE: ${{ steps.version.outputs.base }}
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: |
+          [[ -f "$RELEASE_NOTES" ]] && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+          [[ -d ".changes/$BASE" ]] && echo "staged=true" >> "$GITHUB_OUTPUT" || echo "staged=false" >> "$GITHUB_OUTPUT"
+      - name: Batch prerelease changelog entries
+        if: >-
+          inputs.deploy-to == 'prod'
+          && steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --move-dir ${{ steps.version.outputs.base }}
+            --prerelease ${{ steps.version.outputs.prerelease }}
+      - name: Batch final changelog entries after prereleases
+        if: >-
+          inputs.deploy-to == 'prod'
+          && steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --include ${{ steps.version.outputs.base }}
+            --remove-prereleases
+      - name: Batch final changelog entries
+        if: >-
+          inputs.deploy-to == 'prod'
+          && steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'false'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        with:
+          version: v1.26.0
+          args: batch ${{ steps.version.outputs.base }}
+      - name: Merge changelog
+        if: inputs.deploy-to == 'prod' && steps.changes.outputs.exists == 'false'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        with:
+          version: v1.26.0
+          args: merge
+      - name: Commit release preparation
+        if: inputs.deploy-to == 'prod'
+        env:
+          BRANCH: ${{ inputs.branch }}
+          VERSION: ${{ steps.package.outputs.final }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock .changes CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "::notice::Version and changelog are already prepared for $VERSION."
+          else
+            git commit -m "Prepare release $VERSION"
+            git push origin "HEAD:$BRANCH"
+          fi
+      - name: Record release commit
+        id: ref
+        run: echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: changelog
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ needs.changelog.outputs.ref }}
       - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
@@ -83,11 +236,14 @@ jobs:
 
   github-release:
     if: inputs.deploy-to == 'prod'
-    needs: [build, publish]
+    needs: [changelog, build, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.changelog.outputs.ref }}
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
@@ -97,8 +253,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-        run: >-
-          gh release create "v${VERSION}" dist/*
-          --generate-notes
-          --target "${{ inputs.branch }}"
-          --title "v${VERSION}"
+          RELEASE_NOTES: ${{ needs.changelog.outputs.release-notes }}
+          TARGET: ${{ needs.changelog.outputs.ref }}
+        run: |
+          gh release create "v${VERSION}" dist/* \
+            --notes-file "$RELEASE_NOTES" \
+            --target "$TARGET" \
+            --title "v${VERSION}"
