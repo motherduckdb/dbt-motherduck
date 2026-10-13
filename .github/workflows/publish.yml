@@ -25,6 +25,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -41,6 +43,9 @@ jobs:
         run: uv build
       - name: Check distributions
         run: uvx --from "twine>=7,<8" twine check dist/*
+      - name: Get package version
+        id: package
+        run: echo "version=$(uv run --no-sync python -c 'import importlib.metadata; print(importlib.metadata.version(\"dbt-motherduck\"))')" >> "$GITHUB_OUTPUT"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -75,3 +80,25 @@ jobs:
               && 'https://upload.pypi.org/legacy/'
               || 'https://test.pypi.org/legacy/' }}
           packages-dir: dist/
+
+  github-release:
+    if: inputs.deploy-to == 'prod'
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          gh release create "v${VERSION}" dist/*
+          --generate-notes
+          --target "${{ inputs.branch }}"
+          --title "v${VERSION}"
