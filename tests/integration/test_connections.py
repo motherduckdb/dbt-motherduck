@@ -127,20 +127,30 @@ def test_response_metadata_and_fetch_limit(connection_adapter):
                 "UPDATE main.response_probe SET id = id + 10 WHERE id < 3"
             )
             assert response.code == "UPDATE"
-            assert response.rows_affected in (None, 2)
+            assert response.rows_affected == 2
             response, _ = connection_adapter.execute(
                 "DELETE FROM main.response_probe WHERE id > 10"
             )
             assert response.code == "DELETE"
-            assert response.rows_affected in (None, 2)
+            assert response.rows_affected == 2
             response, _ = connection_adapter.execute(
                 "DELETE FROM main.response_probe WHERE id > 10"
             )
-            assert response.rows_affected in (None, 0)
-            _, table = connection_adapter.execute(
-                "SELECT id FROM main.response_probe", fetch=True
+            assert response.rows_affected == 0
+            response, _ = connection_adapter.execute(
+                "MERGE INTO main.response_probe AS target "
+                "USING (VALUES (3), (4), (5)) AS source(id) "
+                "ON target.id = source.id "
+                "WHEN MATCHED THEN UPDATE SET id = source.id + 10 "
+                "WHEN NOT MATCHED THEN INSERT VALUES (source.id)"
             )
-            assert [row[0] for row in table.rows] == [3]
+            # pg_endpoint does not currently supply a command tag for MERGE.
+            assert response.code == "UNKNOWN"
+            assert response.rows_affected == 3
+            _, table = connection_adapter.execute(
+                "SELECT id FROM main.response_probe ORDER BY id", fetch=True
+            )
+            assert [row[0] for row in table.rows] == [4, 5, 13]
         finally:
             with connection_adapter.connection_named("responses_cleanup"):
                 connection_adapter.execute("DROP TABLE main.response_probe")
