@@ -37,7 +37,7 @@ jobs:
               - 'src/**'
               - 'pyproject.toml'
             changelog:
-              - 'added|modified: .changes/unreleased/*.yaml'
+              - added|modified: '.changes/unreleased/**.yaml'
             tests:
               - 'src/**'
               - 'tests/**'

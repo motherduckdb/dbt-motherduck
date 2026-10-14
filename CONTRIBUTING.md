@@ -8,12 +8,21 @@ Install the project and its development dependencies:
 uv sync --locked
 ```
 
-Run formatting, linting, and unit tests before opening a pull request:
+Run formatting and linting before opening a pull request:
 
 ```shell
 uv run ruff format --check .
 uv run ruff check .
-uv run pytest -m unit
+```
+
+To run all tests, configure the MotherDuck endpoint used for disposable test
+databases:
+
+```shell
+export DBT_ENV_SECRET_MOTHERDUCK_TOKEN="<a MotherDuck token>"
+export MOTHERDUCK_INITIAL_DATABASE="<the database containing the test duckling>"
+export MOTHERDUCK_TEST_RUN_ID="$(whoami)-local-$(date +%s)"
+uv run pytest
 ```
 
 ## Changelog entries
