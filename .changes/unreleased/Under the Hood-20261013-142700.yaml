@@ -1,0 +1,5 @@
+kind: Under the Hood
+body: Add automated version bumps, structured changelog entries, pull request enforcement, and release integration
+time: 2026-10-13T14:27:00-07:00
+custom:
+  Issue: ECO-1234
