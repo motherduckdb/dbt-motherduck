@@ -190,11 +190,11 @@ select id: 1, value: {{ var('value', 1) }}
             expect_pass=not model_fails,
         )
 
-        assert "Could not clean up staging table" in logs
+        assert "Could not clean up temporary table" in logs
         assert project.database in logs
         if model_fails:
             assert "original post-commit hook failure" in results.results[0].message
-            assert "Could not clean up staging table" not in results.results[0].message
+            assert "Could not clean up temporary table" not in results.results[0].message
         target = f'"{project.database}"."{project.test_schema}".cleanup_probe'
         # Both cases commit before the hook that creates the cleanup failure.
         assert project.run_sql(f"select value from {target}", fetch="all") == [(2,)]
