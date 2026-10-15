@@ -53,6 +53,8 @@ jobs:
           uv pip list
       - name: Run unit tests
         run: uv run --no-sync pytest -m unit
+      - name: Test installed wheel
+        run: uv run --no-sync pytest tests/packaging
 
   integration:
     name: integration (${{ matrix.database-type }})

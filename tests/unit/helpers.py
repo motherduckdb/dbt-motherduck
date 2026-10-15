@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 
-def invoke_dbt(project, *args, env=None):
+def invoke_dbt(project, *args, env=None, python=sys.executable):
     project_args = (
         []
         if args == ("--version",)
@@ -11,7 +11,7 @@ def invoke_dbt(project, *args, env=None):
     )
     result = subprocess.run(
         [
-            sys.executable,
+            python,
             "-c",
             "from dbt.cli.main import cli; cli()",
             *args,
