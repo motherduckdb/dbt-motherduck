@@ -12,9 +12,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Not cancel-in-progress: a killed integration run skips the fixture teardown
-  # that drops its generated database.
-  cancel-in-progress: false
+  # Superseded pull request runs no longer need to finish. Keep main and manual
+  # runs alive because cancellation can skip integration database teardown.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
