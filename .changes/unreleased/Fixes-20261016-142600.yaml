@@ -1,0 +1,5 @@
+kind: Fixes
+body: Parse quoted DuckDB struct field names correctly during schema inspection
+time: 2026-10-16T14:26:00-07:00
+custom:
+  Issue: ECO-1250
