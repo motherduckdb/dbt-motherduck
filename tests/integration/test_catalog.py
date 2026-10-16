@@ -67,6 +67,26 @@ select 1::integer as id, 1.5::decimal(18, 2) as amount, 'x'::varchar as label,
             "nested": "STRUCT(fname VARCHAR, age INTEGER)",
         }
 
+    def test_schema_inspection_flattens_quoted_struct_fields(self, project):
+        sql = """
+select cast(null as struct(
+    "a b" integer,
+    "a,b" varchar,
+    "a(b)" boolean,
+    "a""b" bigint,
+    nested struct("c,d" decimal(10,2))
+)) as payload
+"""
+        with get_connection(project.adapter):
+            columns = project.adapter.get_column_schema_from_query(sql)
+        assert [(column.name, column.dtype) for column in columns] == [
+            ('payload."a b"', "INTEGER"),
+            ('payload."a,b"', "VARCHAR"),
+            ('payload."a(b)"', "BOOLEAN"),
+            ('payload."a""b"', "BIGINT"),
+            ('payload.nested."c,d"', "DECIMAL(10,2)"),
+        ]
+
 
 class TestCatalogRelations:
     @pytest.fixture(scope="class")

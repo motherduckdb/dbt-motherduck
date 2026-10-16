@@ -90,23 +90,40 @@ class MotherDuckColumn(Column):
 
         fields = []
         paren_level = 0
+        in_quotes = False
         current_field = ""
-        for char in content:
-            if char == "(":
+        index = 0
+        while index < len(content):
+            char = content[index]
+            if char == '"' and in_quotes and content[index : index + 2] == '""':
+                current_field += '""'
+                index += 2
+                continue
+            if char == '"':
+                in_quotes = not in_quotes
+            elif char == "(" and not in_quotes:
                 paren_level += 1
-            elif char == ")":
+            elif char == ")" and not in_quotes:
                 paren_level -= 1
 
-            if char == "," and paren_level == 0:
+            if char == "," and paren_level == 0 and not in_quotes:
                 fields.append(current_field.strip())
                 current_field = ""
             else:
                 current_field += char
+            index += 1
         fields.append(current_field.strip())
 
         for f in fields:
-            # Split on the first space to separate the name from the type
-            parts = f.split(" ", 1)
-            col_name = parts[0]
-            col_type = parts[1]
+            in_quotes = False
+            index = 0
+            while index < len(f):
+                char = f[index]
+                if char == '"':
+                    in_quotes = not in_quotes
+                elif char.isspace() and not in_quotes:
+                    break
+                index += 1
+            col_name = f[:index]
+            col_type = f[index:].strip()
             self.fields.append(MotherDuckColumn(column=col_name, dtype=col_type))

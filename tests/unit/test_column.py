@@ -114,3 +114,18 @@ def test_flatten_struct_with_decimal_precision():
         ("payload.nested.value", "DECIMAL(10,2)"),
         ("payload.nested.label", "VARCHAR"),
     ]
+
+
+def test_flatten_struct_with_quoted_field_names():
+    column = MotherDuckColumn(
+        "payload",
+        'STRUCT("a b" INTEGER, "a,b" VARCHAR, "a(b)" BOOLEAN, "a""b" BIGINT, '
+        'nested STRUCT("c,d" DECIMAL(10,2)))',
+    )
+    assert [(field.name, field.dtype) for field in column.flatten()] == [
+        ('payload."a b"', "INTEGER"),
+        ('payload."a,b"', "VARCHAR"),
+        ('payload."a(b)"', "BOOLEAN"),
+        ('payload."a""b"', "BIGINT"),
+        ('payload.nested."c,d"', "DECIMAL(10,2)"),
+    ]
