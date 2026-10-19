@@ -61,6 +61,10 @@ def test_is_integer(dtype, expected):
         ("struct(a integer, b varchar)", True),
         ("struct(a integer)", True),
         ("STRUCT(a integer, b varchar)", True),
+        ("STRUCT(INTEGER, VARCHAR)", True),
+        ("STRUCT(a INTEGER)[]", False),
+        ("STRUCT(a INTEGER)[3]", False),
+        ("MAP(VARCHAR, STRUCT(a INTEGER))", False),
         ("integer", False),
         ("varchar", False),
     ],
@@ -120,13 +124,14 @@ def test_flatten_struct_with_quoted_field_names():
     column = MotherDuckColumn(
         "payload",
         'STRUCT("a b" INTEGER, "a,b" VARCHAR, "a(b)" BOOLEAN, "a""b" BIGINT, '
-        'nested STRUCT("c,d" DECIMAL(10,2)))',
+        '"a\nb" DATE, nested STRUCT("c,d" DECIMAL(10,2)))',
     )
     assert [(field.name, field.dtype) for field in column.flatten()] == [
         ('payload."a b"', "INTEGER"),
         ('payload."a,b"', "VARCHAR"),
         ('payload."a(b)"', "BOOLEAN"),
         ('payload."a""b"', "BIGINT"),
+        ('payload."a\nb"', "DATE"),
         ('payload.nested."c,d"', "DECIMAL(10,2)"),
     ]
 
@@ -141,6 +146,8 @@ def test_flatten_struct_with_quoted_field_names():
         "ENUM('a)b')",
         "ENUM('a,b', 'c')",
         "ENUM('a''b')",
+        "ENUM('a[]b')",
+        "ENUM('x\ny')",
     ],
 )
 def test_flatten_struct_with_enum_labels(enum_type):
@@ -148,4 +155,41 @@ def test_flatten_struct_with_enum_labels(enum_type):
     assert [(field.name, field.dtype) for field in column.flatten()] == [
         ("payload.a", enum_type),
         ("payload.b", "INTEGER"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        # lists and arrays of structs can't be addressed as payload.a
+        "STRUCT(a INTEGER)[]",
+        "STRUCT(a INTEGER)[3]",
+        "STRUCT(a INTEGER)[][2]",
+        # unnamed structs, as produced by row(...)
+        "STRUCT(INTEGER, VARCHAR)",
+        "STRUCT(TIMESTAMP WITH TIME ZONE, INTEGER)",
+        "STRUCT(DECIMAL(10,2), ENUM('x'))",
+        "STRUCT(STRUCT(a INTEGER))",
+        # not something DuckDB prints; kept whole rather than dropped
+        'STRUCT("a INTEGER)',
+    ],
+)
+def test_flatten_keeps_non_flattenable_structs_whole(dtype):
+    column = MotherDuckColumn("payload", dtype)
+    assert [(field.name, field.dtype) for field in column.flatten()] == [
+        ("payload", dtype)
+    ]
+
+
+def test_flatten_struct_with_non_flattenable_fields():
+    column = MotherDuckColumn(
+        "payload",
+        "STRUCT(items STRUCT(a INTEGER)[], pair STRUCT(INTEGER, INTEGER), "
+        '"timestamp" TIMESTAMP WITH TIME ZONE, m MAP(VARCHAR, STRUCT(a INTEGER)))',
+    )
+    assert [(field.name, field.dtype) for field in column.flatten()] == [
+        ("payload.items", "STRUCT(a INTEGER)[]"),
+        ("payload.pair", "STRUCT(INTEGER, INTEGER)"),
+        ('payload."timestamp"', "TIMESTAMP WITH TIME ZONE"),
+        ("payload.m", "MAP(VARCHAR, STRUCT(a INTEGER))"),
     ]
