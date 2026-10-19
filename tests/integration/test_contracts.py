@@ -42,3 +42,67 @@ models:
         assert project.run_sql(f"SELECT * FROM {target}", fetch="all") == [
             (1, "value", 3)
         ]
+
+
+class TestStructContracts:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "nested.sql": """
+{{ config(materialized=var('kind'), contract={'enforced': true}) }}
+{% set payloads = {
+    'match': "{'a': 1, 'b': 'x'}",
+    'field_type': "{'a': 1::bigint, 'b': 'x'}",
+    'field_order': "{'b': 'x', 'a': 1}",
+} %}
+select 1 as id, {{ payloads[var('payload', 'match')] }} as payload
+""",
+            "dotted.sql": """
+{{ config(materialized=var('kind'), contract={'enforced': true}) }}
+select 1 as id, {'a': 1, 'b': 'x'} as payload
+""",
+            "schema.yml": """
+version: 2
+models:
+  - name: nested
+    columns:
+      - name: id
+        data_type: integer
+      - name: payload
+        data_type: struct(a integer, b varchar)
+  - name: dotted
+    columns:
+      - name: id
+        data_type: integer
+      - name: payload.a
+        data_type: integer
+        quote: true
+      - name: payload.b
+        data_type: varchar
+        quote: true
+""",
+        }
+
+    @pytest.mark.parametrize("kind", ["table", "view"])
+    def test_struct_contract(self, project, kind):
+        run_dbt(["run", "--select", "nested", "--vars", f"{{kind: {kind}}}"])
+        for payload in ["field_type", "field_order"]:
+            result = run_dbt(
+                [
+                    "run",
+                    "--select",
+                    "nested",
+                    "--vars",
+                    f"{{kind: {kind}, payload: {payload}}}",
+                ],
+                expect_pass=False,
+            )
+            assert "contract" in result.results[0].message.lower()
+
+    @pytest.mark.parametrize("kind", ["table", "view"])
+    def test_dotted_columns_do_not_match_struct(self, project, kind):
+        result = run_dbt(
+            ["run", "--select", "dotted", "--vars", f"{{kind: {kind}}}"],
+            expect_pass=False,
+        )
+        assert "contract" in result.results[0].message.lower()

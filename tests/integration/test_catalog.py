@@ -67,41 +67,29 @@ select 1::integer as id, 1.5::decimal(18, 2) as amount, 'x'::varchar as label,
             "nested": "STRUCT(fname VARCHAR, age INTEGER)",
         }
 
-    def test_schema_inspection_flattens_quoted_struct_fields(self, project):
+    def test_schema_inspection_preserves_nested_type_strings(self, project):
         sql = """
-select cast(null as struct(
-    "a b" integer,
-    "a,b" varchar,
-    "a(b)" boolean,
-    "a""b" bigint,
-    nested struct("c,d" decimal(10,2))
-)) as payload
+select
+    payload: cast(null as struct(
+        "a b" integer,
+        "a,b" varchar,
+        "a""b" bigint,
+        e enum('a''"(,)'),
+        nested struct("c,d" decimal(10,2))
+    )),
+    items: [{'a': 1}],
+    pair: row(1, 'x')
 """
         with get_connection(project.adapter):
             columns = project.adapter.get_column_schema_from_query(sql)
         assert [(column.name, column.dtype) for column in columns] == [
-            ('payload."a b"', "INTEGER"),
-            ('payload."a,b"', "VARCHAR"),
-            ('payload."a(b)"', "BOOLEAN"),
-            ('payload."a""b"', "BIGINT"),
-            ('payload.nested."c,d"', "DECIMAL(10,2)"),
-        ]
-
-    def test_schema_inspection_flattens_struct_with_enum_labels(self, project):
-        sql = """
-select payload: cast(null as struct(
-    a enum('a"'),
-    nested struct("c'd" enum('a''"(,)'), id integer),
-    tail integer
-))
-"""
-        with get_connection(project.adapter):
-            columns = project.adapter.get_column_schema_from_query(sql)
-        assert [(column.name, column.dtype) for column in columns] == [
-            ("payload.a", """ENUM('a"')"""),
-            ('payload.nested."c\'d"', """ENUM('a''"(,)')"""),
-            ("payload.nested.id", "INTEGER"),
-            ("payload.tail", "INTEGER"),
+            (
+                "payload",
+                """STRUCT("a b" INTEGER, "a,b" VARCHAR, "a""b" BIGINT, """
+                """e ENUM('a''"(,)'), nested STRUCT("c,d" DECIMAL(10,2)))""",
+            ),
+            ("items", "STRUCT(a INTEGER)[]"),
+            ("pair", "STRUCT(INTEGER, VARCHAR)"),
         ]
 
 

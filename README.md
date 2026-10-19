@@ -71,6 +71,20 @@ For a model-specific override, restore the profile value in a post-hook:
 ```
 
 
+### complex types in contracts
+
+Complex types on model contracts are now more strict, and it needs to match exactly how DuckDB prints the type.
+
+```yaml
+columns:
+  - name: payload
+    data_type: struct(a integer, b varchar) # real type, works
+    data_type: struct(b varchar, a integer) # passes on dbt-duckdb, fails on dbt-motherduck
+```
+
+Field names, types, and order must all match.
+
+
 ## 2.0 limitations
 
 ### nested schemas

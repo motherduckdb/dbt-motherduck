@@ -204,12 +204,7 @@ class MotherDuckAdapter(SQLAdapter):
         # ability to DESCRIBE a query instead of a relation
         describe_sql = f"DESCRIBE ({sql})"
         _, table = self.execute(describe_sql, fetch=True)
-        flattened_columns = []
-        for row in table.rows:
-            name, dtype = row[0], row[1]
-            column = MotherDuckColumn(column=name, dtype=dtype)
-            flattened_columns.extend(column.flatten())
-        return flattened_columns
+        return [MotherDuckColumn(column=row[0], dtype=row[1]) for row in table.rows]
 
     def expand_column_types(self, goal, current):
         # DuckDB VARCHAR has no length constraint; avoid redundant metadata queries.
