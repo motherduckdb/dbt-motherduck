@@ -129,3 +129,23 @@ def test_flatten_struct_with_quoted_field_names():
         ('payload."a""b"', "BIGINT"),
         ('payload.nested."c,d"', "DECIMAL(10,2)"),
     ]
+
+
+@pytest.mark.parametrize(
+    "enum_type",
+    [
+        """ENUM('a"')""",
+        """ENUM('a''"')""",
+        """ENUM('a""')""",
+        "ENUM('a(b')",
+        "ENUM('a)b')",
+        "ENUM('a,b', 'c')",
+        "ENUM('a''b')",
+    ],
+)
+def test_flatten_struct_with_enum_labels(enum_type):
+    column = MotherDuckColumn("payload", f"STRUCT(a {enum_type}, b INTEGER)")
+    assert [(field.name, field.dtype) for field in column.flatten()] == [
+        ("payload.a", enum_type),
+        ("payload.b", "INTEGER"),
+    ]

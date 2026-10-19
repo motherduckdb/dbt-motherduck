@@ -90,23 +90,27 @@ class MotherDuckColumn(Column):
 
         fields = []
         paren_level = 0
-        in_quotes = False
+        quote = None
         current_field = ""
         index = 0
         while index < len(content):
             char = content[index]
-            if char == '"' and in_quotes and content[index : index + 2] == '""':
-                current_field += '""'
-                index += 2
-                continue
-            if char == '"':
-                in_quotes = not in_quotes
-            elif char == "(" and not in_quotes:
+            if quote is not None:
+                if char == quote:
+                    if content[index : index + 2] == quote * 2:
+                        current_field += quote * 2
+                        index += 2
+                        continue
+                    quote = None
+            elif char in ('"', "'"):
+                # Identifiers use double quotes; ENUM labels use single quotes.
+                quote = char
+            elif char == "(":
                 paren_level += 1
-            elif char == ")" and not in_quotes:
+            elif char == ")":
                 paren_level -= 1
 
-            if char == "," and paren_level == 0 and not in_quotes:
+            if char == "," and paren_level == 0 and quote is None:
                 fields.append(current_field.strip())
                 current_field = ""
             else:

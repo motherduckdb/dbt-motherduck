@@ -87,6 +87,23 @@ select cast(null as struct(
             ('payload.nested."c,d"', "DECIMAL(10,2)"),
         ]
 
+    def test_schema_inspection_flattens_struct_with_enum_labels(self, project):
+        sql = """
+select payload: cast(null as struct(
+    a enum('a"'),
+    nested struct("c'd" enum('a''"(,)'), id integer),
+    tail integer
+))
+"""
+        with get_connection(project.adapter):
+            columns = project.adapter.get_column_schema_from_query(sql)
+        assert [(column.name, column.dtype) for column in columns] == [
+            ("payload.a", """ENUM('a"')"""),
+            ('payload.nested."c\'d"', """ENUM('a''"(,)')"""),
+            ("payload.nested.id", "INTEGER"),
+            ("payload.tail", "INTEGER"),
+        ]
+
 
 class TestCatalogRelations:
     @pytest.fixture(scope="class")
