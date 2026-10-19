@@ -49,85 +49,115 @@ class MotherDuckColumn(Column):
         }
 
     def is_struct(self) -> bool:
-        return self.dtype.lower().startswith("struct")
+        return _struct_body(_tokenize(self.dtype)) is not None
 
     def flatten(self) -> list["MotherDuckColumn"]:
-        if not self.is_struct():
+        # Only structs with named fields are flattened. Lists/arrays of structs,
+        # unnamed structs (from row(...)) and anything we can't parse are kept whole.
+        if not self.fields:
             return [self]
-
-        flat_columns: list[MotherDuckColumn] = []
-        for column_field in self.fields:
-            if column_field.is_struct():
-                # Recursively flatten nested structs
-                for nested_field in column_field.flatten():
-                    flat_columns.append(
-                        MotherDuckColumn(
-                            column=f"{self.column}.{nested_field.column}",
-                            dtype=nested_field.dtype,
-                        )
-                    )
-            else:
-                flat_columns.append(
-                    MotherDuckColumn(
-                        column=f"{self.column}.{column_field.column}",
-                        dtype=column_field.dtype,
-                    )
-                )
-        return flat_columns
+        return [
+            MotherDuckColumn(
+                column=f"{self.column}.{nested_field.column}",
+                dtype=nested_field.dtype,
+            )
+            for column_field in self.fields
+            for nested_field in column_field.flatten()
+        ]
 
     def _parse_struct_fields(self):
-        # In DuckDB, structs are defined as STRUCT(key1 type1, key2 type2, ...)
-        # We need to extract the key-type pairs from the struct definition
-        # e.g., STRUCT(a VARCHAR, b INTEGER) -> ["a VARCHAR", "b INTEGER"]
-        # We can't just split by comma, because types can contain commas
-        # e.g. DECIMAL(10, 2)
-        # The following logic will handle nested structs and complex types
-        match = re.match(r"STRUCT\((.*)\)", self.dtype, re.IGNORECASE)
-        if not match:
-            return
+        for name, dtype in _parse_struct_fields(self.dtype) or []:
+            self.fields.append(MotherDuckColumn(column=name, dtype=dtype))
 
-        content = match.group(1)
 
-        fields = []
-        paren_level = 0
-        quote = None
-        current_field = ""
-        index = 0
-        while index < len(content):
-            char = content[index]
-            if quote is not None:
-                if char == quote:
-                    if content[index : index + 2] == quote * 2:
-                        current_field += quote * 2
-                        index += 2
-                        continue
-                    quote = None
-            elif char in ('"', "'"):
-                # Identifiers use double quotes; ENUM labels use single quotes.
-                quote = char
-            elif char == "(":
-                paren_level += 1
-            elif char == ")":
-                paren_level -= 1
+# DuckDB prints struct types as STRUCT(name type, ...). Names are bare words or
+# double-quoted identifiers ("" escapes a quote); ENUM labels are single-quoted
+# literals ('' escapes a quote). Either may contain spaces, commas, parentheses or
+# newlines, so the type string has to be tokenized rather than scanned by character.
+_TOKEN_RE = re.compile(
+    r"""
+      (?P<ident>"(?:[^"]|"")*")
+    | (?P<literal>'(?:[^']|'')*')
+    | (?P<punct>[()\[\],])
+    | (?P<word>[^\s"'()\[\],]+)
+    | (?P<space>\s+)
+    """,
+    re.VERBOSE,
+)
 
-            if char == "," and paren_level == 0 and quote is None:
-                fields.append(current_field.strip())
-                current_field = ""
-            else:
-                current_field += char
-            index += 1
-        fields.append(current_field.strip())
 
-        for f in fields:
-            in_quotes = False
-            index = 0
-            while index < len(f):
-                char = f[index]
-                if char == '"':
-                    in_quotes = not in_quotes
-                elif char.isspace() and not in_quotes:
-                    break
-                index += 1
-            col_name = f[:index]
-            col_type = f[index:].strip()
-            self.fields.append(MotherDuckColumn(column=col_name, dtype=col_type))
+@dataclass(frozen=True)
+class _Token:
+    kind: str
+    text: str
+    start: int
+    end: int
+
+
+def _tokenize(dtype: str) -> list[_Token] | None:
+    tokens = []
+    position = 0
+    while position < len(dtype):
+        match = _TOKEN_RE.match(dtype, position)
+        if match is None:
+            # Unterminated quote: not a type string DuckDB would print.
+            return None
+        if match.lastgroup != "space":
+            tokens.append(_Token(match.lastgroup, match.group(), *match.span()))
+        position = match.end()
+    return tokens
+
+
+def _struct_body(tokens: list[_Token] | None) -> list[_Token] | None:
+    """Return the tokens between STRUCT( and its closing paren, if the whole type
+    is a bare struct. STRUCT(...)[] and STRUCT(...)[3] are lists/arrays."""
+    if (
+        not tokens
+        or len(tokens) < 3
+        or tokens[0].kind != "word"
+        or tokens[0].text.upper() != "STRUCT"
+        or tokens[1].text != "("
+    ):
+        return None
+    depth = 0
+    for index, token in enumerate(tokens[1:], start=1):
+        if token.text in ("(", "["):
+            depth += 1
+        elif token.text in (")", "]"):
+            depth -= 1
+            if depth == 0:
+                return tokens[2:index] if index == len(tokens) - 1 else None
+    return None
+
+
+def _parse_struct_fields(dtype: str) -> list[tuple[str, str]] | None:
+    body = _struct_body(_tokenize(dtype))
+    if not body:
+        return None
+
+    fields: list[list[_Token]] = [[]]
+    depth = 0
+    for token in body:
+        if token.text in ("(", "["):
+            depth += 1
+        elif token.text in (")", "]"):
+            depth -= 1
+        if token.text == "," and depth == 0:
+            fields.append([])
+        else:
+            fields[-1].append(token)
+
+    parsed = []
+    for name, *type_tokens in fields:
+        # Unnamed structs print as STRUCT(INTEGER, TIMESTAMP WITH TIME ZONE). In named
+        # structs the type always starts with a bare word, and DuckDB quotes field
+        # names that are keywords, so "TIMESTAMP" followed by WITH can't be a name.
+        if (
+            name.kind not in ("ident", "word")
+            or not type_tokens
+            or type_tokens[0].kind != "word"
+            or type_tokens[0].text.upper() == "WITH"
+        ):
+            return None
+        parsed.append((name.text, dtype[type_tokens[0].start : type_tokens[-1].end]))
+    return parsed
