@@ -97,6 +97,58 @@ select id: 1, value: {{ var('value', 1) }}
             ) == [(1, 2)]
 
 
+class TestCancelledStagingCleanup:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "incremental_staged.sql": """
+{{ config(materialized='incremental', unique_key='id') }}
+select id: 1, value: {{ var('value', 1) }}
+"""
+        }
+
+    def test_staging_left_after_commit_is_dropped(self, project):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from tests.integration.test_cancellation import "
+                "_exercise_staging_cleanup; _exercise_staging_cleanup()",
+            ],
+            input=json.dumps(
+                {
+                    "project": str(project.project_root),
+                    "profiles": str(project.profiles_dir),
+                }
+            ),
+            cwd=Path(__file__).resolve().parents[2],
+            env={**os.environ, "DBT_SEND_ANONYMOUS_USAGE_STATS": "false"},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Could not drop staging tables" not in result.stdout + result.stderr
+        relation = project.adapter.Relation.create(
+            database=project.database,
+            schema=project.test_schema,
+            identifier="incremental_staged",
+        )
+        # The merge committed before the interruption.
+        assert project.run_sql(f"select id, value from {relation}", fetch="all") == [
+            (1, 2)
+        ]
+        assert (
+            project.run_sql(
+                "select table_name from duckdb_tables() "
+                f"where database_name = '{project.database}' "
+                "and schema_name = 'dbt_temp'",
+                fetch="all",
+            )
+            == []
+        )
+
+
 def _exercise_shutdown():
     data = json.load(sys.stdin)
     set_from_args(Namespace(send_anonymous_usage_stats=False), None)
@@ -275,3 +327,49 @@ def _exercise_dbt_cancellation():
     print(f"Cancellation returned after {shutdown_seconds:.3f}s", flush=True)
     # The Python host survives cancellation, and a new invocation is not poisoned.
     assert dbtRunner().invoke([*args, "--vars", json.dumps({"value": 2})]).success
+
+
+def _exercise_staging_cleanup():
+    from dbt.adapters.motherduck.impl import MotherDuckAdapter
+
+    data = json.load(sys.stdin)
+    args = [
+        "run",
+        "--project-dir",
+        data["project"],
+        "--profiles-dir",
+        data["profiles"],
+    ]
+    assert dbtRunner().invoke([*args, "--full-refresh"]).success
+    query = Queue(maxsize=1)
+    drops = {}
+    original_drop = MotherDuckAdapter.drop_relation
+
+    def stalled_drop(self, relation):
+        # pre_model_hook drops the staging name before creating it; the second drop
+        # runs after the model commits. Stall that one so SIGINT lands in the window
+        # where the staging table exists and nothing has removed it yet.
+        if relation.schema == "dbt_temp":
+            drops[relation] = drops.get(relation, 0) + 1
+            if drops[relation] == 2:
+                query.put(self.connections.get_thread_connection().handle)
+                self.execute("select total: sum(sin(i)) from range(1000000000) t(i)")
+        return original_drop(self, relation)
+
+    def interrupt():
+        handle = query.get(timeout=60)
+        deadline = monotonic() + 10
+        while handle.info.transaction_status != psycopg.pq.TransactionStatus.ACTIVE:
+            assert monotonic() < deadline, "Query did not become active"
+            sleep(0.01)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    interrupter = Thread(target=interrupt, daemon=True)
+    interrupter.start()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(MotherDuckAdapter, "drop_relation", stalled_drop)
+        result = dbtRunner().invoke([*args, "--vars", json.dumps({"value": 2})])
+    interrupter.join(timeout=10)
+    assert not interrupter.is_alive(), "Interruption thread did not finish"
+    assert not result.success
+    assert isinstance(result.exception, KeyboardInterrupt), repr(result.exception)

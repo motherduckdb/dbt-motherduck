@@ -1,5 +1,6 @@
 from contextlib import contextmanager
-from threading import Event
+from math import ceil
+from threading import Event, Timer
 from time import perf_counter
 
 import psycopg
@@ -42,19 +43,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         handle = None
         setting_name = None
         try:
-            handle = psycopg.connect(
-                host=credentials.host,
-                port=credentials.port,
-                user=credentials.user,
-                password=credentials.token,
-                dbname=credentials.database,
-                sslmode="verify-full",
-                sslrootcert=credentials.sslrootcert,
-                connect_timeout=credentials.connect_timeout,
-                options="-c attach_mode=single",
-                # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
-                autocommit=True,
-            )
+            handle = self._connect(credentials, credentials.connect_timeout)
 
             # register the handle before any queries run so canceling the invocation
             # can close the connection
@@ -200,6 +189,37 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 f"Could not close connection '{connection.name}' during cancellation: {message}. "
                 "Continuing cancelling the remaining connections."
             )
+
+    @contextmanager
+    def cleanup_session(self, databases, timeout):
+        # Cancellation refuses new dbt connections, so cleanup gets its own session.
+        # Closing it from a timer bounds a stuck query, as cancel() does for workers.
+        started = perf_counter()
+        handle = self._connect(self.profile.credentials, max(2, ceil(timeout)))
+        timer = Timer(max(0, timeout - (perf_counter() - started)), handle.close)
+        timer.start()
+        try:
+            self._attach_databases(handle, databases)
+            yield handle
+        finally:
+            timer.cancel()
+            handle.close()
+
+    @staticmethod
+    def _connect(credentials, connect_timeout):
+        return psycopg.connect(
+            host=credentials.host,
+            port=credentials.port,
+            user=credentials.user,
+            password=credentials.token,
+            dbname=credentials.database,
+            sslmode="verify-full",
+            sslrootcert=credentials.sslrootcert,
+            connect_timeout=connect_timeout,
+            options="-c attach_mode=single",
+            # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
+            autocommit=True,
+        )
 
     def execute(self, sql, auto_begin=False, fetch=False, limit=None):
         with self.exception_handler(sql):

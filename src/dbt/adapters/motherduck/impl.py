@@ -3,6 +3,7 @@
 from collections import defaultdict
 from datetime import date
 from threading import Lock
+from time import monotonic
 from uuid import uuid4
 
 from dbt.adapters.base.impl import ConstraintSupport
@@ -27,6 +28,9 @@ from dbt.adapters.motherduck.column import MotherDuckColumn
 from dbt.adapters.motherduck.config import MotherDuckConfig, MotherDuckIndexConfig
 from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
 from dbt.adapters.motherduck.relation import MotherDuckRelation
+
+# Upper bound on how long dbt's shutdown waits for staging cleanup after a cancellation.
+STAGING_CLEANUP_TIMEOUT_SECONDS = 5
 
 
 class MotherDuckAdapter(SQLAdapter):
@@ -67,6 +71,10 @@ class MotherDuckAdapter(SQLAdapter):
         # schema if not exist`. this lock synchronizes adapter-wide creation of the schemas where
         # incremental models and snapshots build their staging tables.
         self._temp_relations_lock = Lock()
+        # Staging names are unique per invocation, so a later run cannot find tables this
+        # one abandons. Track them until dropped; cleanup_connections() drops leftovers.
+        self._staging_relations = set()
+        self._staging_relations_lock = Lock()
 
     @classmethod
     def date_function(cls):
@@ -95,6 +103,8 @@ class MotherDuckAdapter(SQLAdapter):
             self.commit_if_has_connection()
             self.create_schema(staging)
         self.drop_relation(staging)
+        with self._staging_relations_lock:
+            self._staging_relations.add(staging)
         # Prepare before model hooks, so staging setup cannot commit their writes.
         self.commit_if_has_connection()
         return staging
@@ -107,11 +117,47 @@ class MotherDuckAdapter(SQLAdapter):
                 # Broken sessions need reconnecting before cleanup.
                 self.connections.open(self.connections.get_thread_connection())
                 self.drop_relation(context)
+                with self._staging_relations_lock:
+                    self._staging_relations.discard(context)
             except DbtDatabaseError as exc:
                 # dbt calls this hook from finally; preserve the materialization's outcome.
                 AdapterLogger("MotherDuck").warning(
                     f"Could not clean up temporary table {context}: {exc}. "
                 )
+
+    def cleanup_connections(self):
+        # dbt calls this after joining worker threads, including after a cancellation.
+        try:
+            self._drop_abandoned_staging_relations()
+        finally:
+            super().cleanup_connections()
+
+    def _drop_abandoned_staging_relations(self):
+        with self._staging_relations_lock:
+            remaining = sorted(self._staging_relations, key=str)
+            self._staging_relations.clear()
+        if not remaining:
+            return
+        deadline = monotonic() + STAGING_CLEANUP_TIMEOUT_SECONDS
+        try:
+            with self.connections.cleanup_session(
+                {relation.database for relation in remaining},
+                STAGING_CLEANUP_TIMEOUT_SECONDS,
+            ) as handle:
+                while remaining:
+                    handle.execute(f"drop table if exists {remaining[0]}")
+                    remaining.pop(0)
+        except Exception as exc:
+            reason = (
+                f"timed out after {STAGING_CLEANUP_TIMEOUT_SECONDS}s"
+                if monotonic() >= deadline
+                else str(exc).replace(self.config.credentials.token, "[REDACTED]")
+            )
+            names = ", ".join(str(relation) for relation in remaining)
+            AdapterLogger("MotherDuck").warning(
+                f"Could not drop staging tables left by an interrupted run ({reason}). "
+                f"Drop them manually: {names}"
+            )
 
     def commit_if_has_connection(self):
         connection = self.connections.get_if_exists()

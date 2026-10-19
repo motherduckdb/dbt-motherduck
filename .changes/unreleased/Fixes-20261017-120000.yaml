@@ -1,0 +1,5 @@
+kind: Fixes
+body: Drop incremental and snapshot staging tables left behind when a run is cancelled, and warn with their names if cleanup fails
+time: 2026-10-17T12:00:00-07:00
+custom:
+  Issue: ECO-1253

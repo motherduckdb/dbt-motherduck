@@ -70,6 +70,20 @@ For a model-specific override, restore the profile value in a post-hook:
 ) }}
 ```
 
+### staging tables and cancellation
+
+MotherDuck has no remote temporary tables, so incremental models and snapshots stage
+rows in regular tables, in `dbt_temp` or the schema set by `meta.temp_schema_name`.
+Each staging table name carries a random suffix, so concurrent runs and same-named
+models in different schemas never share one. Because of that suffix, a later run
+cannot discover tables an earlier run left behind.
+
+When a run is cancelled, dbt first disconnects the worker sessions, then the adapter
+drops the staging tables those workers left, using a new session limited to 5 seconds.
+If that cleanup fails or times out, dbt logs a warning naming each remaining table so
+you can drop it yourself. Cleanup cannot run if the dbt process is killed outright,
+for example with `SIGKILL` or a second Ctrl-C during shutdown.
+
 
 ## 2.0 limitations
 
