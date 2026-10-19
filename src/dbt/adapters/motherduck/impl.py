@@ -159,6 +159,12 @@ class MotherDuckAdapter(SQLAdapter):
 
     @available
     def is_ducklake(self, relation):
+        if not relation or not relation.database:
+            raise DbtRuntimeError(
+                "MotherDuck cannot determine whether a relation uses DuckLake "
+                "without a database. Pass database=... when creating the relation."
+            )
+
         key = relation.database.lower()
         with self._ducklake_cache_lock:
             if key in self._ducklake_cache:

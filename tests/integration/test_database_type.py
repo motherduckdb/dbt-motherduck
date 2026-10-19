@@ -8,6 +8,7 @@ from threading import Barrier
 import pytest
 from dbt.tests.util import get_connection, run_dbt
 from dbt_common.events import get_event_manager
+from dbt_common.exceptions import DbtRuntimeError
 
 
 class TestNonDefaultDatabaseType:
@@ -26,6 +27,17 @@ class TestNonDefaultDatabaseType:
 select id: 1, ds: 2
 """,
         }
+
+    def test_is_ducklake_requires_database(self, connection_adapter):
+        adapter = connection_adapter
+        relation = adapter.Relation.create(schema="main", identifier="type_probe")
+
+        for incomplete_relation in (None, relation):
+            with pytest.raises(
+                DbtRuntimeError,
+                match=r"Pass database=\.\.\. when creating the relation",
+            ):
+                adapter.is_ducklake(incomplete_relation)
 
     def test_is_ducklake_for_non_default_database(
         self, connection_adapter, database_type, other_database
