@@ -1,12 +1,19 @@
 from contextlib import contextmanager
 from threading import Event
 from time import perf_counter
+from traceback import format_exc
 
 import psycopg
 import sqlparse
 from dbt.adapters.contracts.connection import AdapterResponse, ConnectionState
 from dbt.adapters.events.logging import AdapterLogger
-from dbt.adapters.events.types import ConnectionUsed, Rollback, SQLQuery, SQLQueryStatus
+from dbt.adapters.events.types import (
+    ConnectionUsed,
+    Rollback,
+    RollbackFailed,
+    SQLQuery,
+    SQLQueryStatus,
+)
 from dbt.adapters.exceptions import FailedToConnectError
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.clients.agate_helper import empty_table
@@ -327,6 +334,23 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             code=code,
             rows_affected=affected,
         )
+
+    @classmethod
+    def _rollback_handle(cls, connection):
+        try:
+            connection.handle.rollback()
+        except Exception:
+            # redact token, the traceback can include the original query error
+            # as well as the rollback error with the profile credentials.
+            fire_event(
+                RollbackFailed(
+                    conn_name=cast_to_str(connection.name),
+                    exc_info=format_exc().replace(
+                        connection.credentials.token, "[REDACTED]"
+                    ),
+                    node_info=get_node_info(),
+                )
+            )
 
     @contextmanager
     def exception_handler(self, sql):
