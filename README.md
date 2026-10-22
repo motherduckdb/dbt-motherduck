@@ -35,6 +35,10 @@ either one logs in both. All threads share one login, and dbt logs in again if
 the saved token has expired or is rejected. `token` must be unset or empty with
 `authenticator: externalbrowser`; use the default `authenticator: token` in CI.
 
+dbt logs in through MotherDuck's own public Auth0 application by default. Set
+`oauth_client_id` to log in through a different MotherDuck-registered application,
+for example when testing against a staging environment.
+
 
 ## breaking changes
 

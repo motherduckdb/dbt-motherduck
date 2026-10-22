@@ -20,6 +20,7 @@ import webbrowser
 from pathlib import Path
 from threading import Event, Lock
 
+# The default public client ID; profiles can override it with `oauth_client_id`.
 # TODO: register a dedicated Auth0 application for dbt-motherduck. The prototype
 # reuses the MotherDuck CLI's client, whose logins yield short-lived tokens.
 OAUTH_CLIENT_ID = "bmRe4wSjYj1WzwqnJ6kptnyBnwKUgMlD"
@@ -172,7 +173,7 @@ class BrowserAuthenticator:
         self._token = None
         self._failure = None
 
-    def get_token(self):
+    def get_token(self, client_id=OAUTH_CLIENT_ID):
         with self._lock:
             # A failed login is final for the process; otherwise every worker
             # thread would start its own login and wait for it to expire.
@@ -180,7 +181,7 @@ class BrowserAuthenticator:
                 raise BrowserAuthError(str(self._failure))
             if self._token is None or token_expired(self._token):
                 try:
-                    self._token = self._resolve_token()
+                    self._token = self._resolve_token(client_id)
                 except BrowserAuthError as exc:
                     self._failure = exc
                     raise
@@ -197,12 +198,12 @@ class BrowserAuthenticator:
             if load_saved_token(path) == token:
                 path.unlink(missing_ok=True)
 
-    def _resolve_token(self):
+    def _resolve_token(self, client_id):
         path = credentials_file_path()
         token = load_saved_token(path)
         if token is not None and not token_expired(token):
             return token
-        token = self._login()
+        token = self._login(client_id)
         try:
             save_token(path, token)
         except OSError as exc:
@@ -212,12 +213,12 @@ class BrowserAuthenticator:
             )
         return token
 
-    def _login(self):
+    def _login(self, client_id):
         try:
             status, device = self._request(
                 OAUTH_DEVICE_CODE_URL,
                 data={
-                    "client_id": OAUTH_CLIENT_ID,
+                    "client_id": client_id,
                     "scope": "openid profile email",
                     "audience": OAUTH_AUDIENCE,
                 },
@@ -247,10 +248,10 @@ class BrowserAuthenticator:
             # The printed URL is enough if no browser can be opened.
             with contextlib.suppress(Exception):
                 self._open_browser(url)
-        id_token = self._poll_for_id_token(device)
+        id_token = self._poll_for_id_token(device, client_id)
         return self._exchange_for_motherduck_token(id_token)
 
-    def _poll_for_id_token(self, device):
+    def _poll_for_id_token(self, device, client_id):
         interval = device.get("interval") or 5
         deadline = self._clock() + (device.get("expires_in") or 300)
         while self._clock() < deadline:
@@ -261,7 +262,7 @@ class BrowserAuthenticator:
                     data={
                         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                         "device_code": device["device_code"],
-                        "client_id": OAUTH_CLIENT_ID,
+                        "client_id": client_id,
                     },
                 )
             except OSError:

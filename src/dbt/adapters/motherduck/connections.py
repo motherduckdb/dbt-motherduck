@@ -25,6 +25,7 @@ from psycopg import sql as pg_sql
 from sqlparse import lexer
 
 from dbt.adapters.motherduck.browser_auth import (
+    OAUTH_CLIENT_ID,
     BrowserAuthenticator,
     BrowserAuthError,
     redact,
@@ -111,13 +112,14 @@ class MotherDuckConnectionManager(SQLConnectionManager):
 
         if credentials.authenticator != "externalbrowser":
             return connect(credentials.token)
-        token = self.browser_authenticator.get_token()
+        client_id = credentials.oauth_client_id or OAUTH_CLIENT_ID
+        token = self.browser_authenticator.get_token(client_id)
         try:
             return connect(token)
         except psycopg.errors.InvalidPassword:
             # The cached login was revoked or expired early: log in again once.
             self.browser_authenticator.invalidate(token)
-            return connect(self.browser_authenticator.get_token())
+            return connect(self.browser_authenticator.get_token(client_id))
 
     @staticmethod
     def _redact(message, credentials):

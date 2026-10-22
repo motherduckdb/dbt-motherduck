@@ -509,3 +509,40 @@ def test_rollback_failure_is_redacted_without_profile_token(monkeypatch):
     (event,) = events
     assert "rollback failed" in event.exc_info
     assert VALID_TOKEN not in event.exc_info
+
+
+def test_login_uses_requested_client_id():
+    server = FakeServer([(200, {"id_token": "id-token"})])
+    authenticator, _, _ = make_authenticator(server)
+    authenticator.get_token("custom-client")
+    client_ids = [
+        data["client_id"]
+        for url, data, _ in server.requests
+        if url in (browser_auth.OAUTH_DEVICE_CODE_URL, browser_auth.OAUTH_TOKEN_URL)
+    ]
+    assert client_ids == ["custom-client", "custom-client"]
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [(None, browser_auth.OAUTH_CLIENT_ID), ("custom-client", "custom-client")],
+)
+def test_open_passes_profile_client_id(monkeypatch, override, expected):
+    credentials = MotherDuckCredentials(
+        host="example.com",
+        database="db",
+        schema="main",
+        authenticator="externalbrowser",
+        oauth_client_id=override,
+    )
+    manager, connection, _ = open_connection(monkeypatch, credentials, [FakeHandle()])
+    requested = []
+
+    class RecordingAuthenticator:
+        def get_token(self, client_id):
+            requested.append(client_id)
+            return VALID_TOKEN
+
+    manager.browser_authenticator = RecordingAuthenticator()
+    manager.open(connection)
+    assert requested == [expected]

@@ -172,3 +172,34 @@ def test_invalid_authenticator_combinations(changes, message):
     }
     with pytest.raises(DbtRuntimeError, match=message):
         MotherDuckCredentials(**(values | changes))
+
+
+def test_oauth_client_id_override():
+    credentials = MotherDuckCredentials(
+        host="example.com",
+        database="db",
+        schema="main",
+        authenticator="externalbrowser",
+        oauth_client_id="custom-client",
+    )
+    assert credentials.oauth_client_id == "custom-client"
+    assert ("oauth_client_id", "custom-client") in credentials.connection_info()
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        (
+            {"token": "secret", "oauth_client_id": "custom-client"},
+            "oauth_client_id is only used when authenticator is 'externalbrowser'",
+        ),
+        (
+            {"authenticator": "externalbrowser", "oauth_client_id": " "},
+            "oauth_client_id must be a non-empty string",
+        ),
+    ],
+)
+def test_invalid_oauth_client_id(changes, message):
+    values = {"host": "example.com", "database": "db", "schema": "main"}
+    with pytest.raises(DbtRuntimeError, match=message):
+        MotherDuckCredentials(**(values | changes))

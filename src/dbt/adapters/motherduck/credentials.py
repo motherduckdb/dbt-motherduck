@@ -13,6 +13,8 @@ class MotherDuckCredentials(Credentials):
     host: str
     token: str | None = field(default=None, repr=False)
     authenticator: str = "token"
+    # Overrides the Auth0 application that `externalbrowser` logs in through.
+    oauth_client_id: str | None = None
     port: int = 5432
     user: str = "postgres"
     sslrootcert: str = field(default_factory=certifi.where)
@@ -35,9 +37,15 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError(
                 "token must not be set when authenticator is 'externalbrowser'"
             )
+        if self.authenticator != "externalbrowser" and self.oauth_client_id is not None:
+            raise DbtRuntimeError(
+                "oauth_client_id is only used when authenticator is 'externalbrowser'"
+            )
         names = ("host", "database", "schema", "user", "sslrootcert")
         if self.authenticator == "token":
             names = ("token", *names)
+        if self.oauth_client_id is not None:
+            names = (*names, "oauth_client_id")
         for name in names:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
@@ -89,6 +97,7 @@ class MotherDuckCredentials(Credentials):
         return (
             "host",
             "authenticator",
+            "oauth_client_id",
             "port",
             "user",
             "database",
