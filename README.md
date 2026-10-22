@@ -14,6 +14,28 @@ dwh:
 ```
 
 
+### browser login (SSO)
+
+For local development, log in through your browser instead of storing a token.
+Organizations that enforce SSO get their identity provider's login page:
+
+```yaml
+dev:
+  type: motherduck
+  authenticator: externalbrowser
+  host: "pg.us-east-1-aws.motherduck.com"
+  database:
+  schema:
+```
+
+On the first connection dbt prints a URL and code and opens your browser. The
+resulting token is saved to `~/.motherduck/credentials.json` (or
+`$MOTHERDUCK_HOME/credentials.json`), the same file `motherduck login` uses, so
+either one logs in both. All threads share one login, and dbt logs in again if
+the saved token has expired or is rejected. `token` must be unset or empty with
+`authenticator: externalbrowser`; use the default `authenticator: token` in CI.
+
+
 ## breaking changes
 
 ### adapter-specific configs under config.meta

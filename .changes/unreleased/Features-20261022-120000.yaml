@@ -1,0 +1,5 @@
+kind: Features
+body: Add `authenticator: externalbrowser` for browser-based (SSO) login that shares saved credentials with the MotherDuck CLI
+time: 2026-10-22T12:00:00-07:00
+custom:
+  Issue: TBD

@@ -5,11 +5,14 @@ import certifi
 from dbt.adapters.contracts.connection import Credentials
 from dbt_common.exceptions import DbtRuntimeError
 
+AUTHENTICATORS = ("token", "externalbrowser")
+
 
 @dataclass
 class MotherDuckCredentials(Credentials):
     host: str
-    token: str = field(repr=False)
+    token: str | None = field(default=None, repr=False)
+    authenticator: str = "token"
     port: int = 5432
     user: str = "postgres"
     sslrootcert: str = field(default_factory=certifi.where)
@@ -18,7 +21,24 @@ class MotherDuckCredentials(Credentials):
     settings: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        for name in ("host", "token", "database", "schema", "user", "sslrootcert"):
+        if self.authenticator not in AUTHENTICATORS:
+            raise DbtRuntimeError(
+                f"authenticator must be one of {', '.join(map(repr, AUTHENTICATORS))}"
+            )
+        if self.authenticator == "token" and self.token is None:
+            raise DbtRuntimeError(
+                "token is a required property when authenticator is 'token'"
+            )
+        # An empty token is allowed so profiles can template
+        # `token: "{{ env_var('X', '') }}"` for both modes.
+        if self.authenticator == "externalbrowser" and self.token:
+            raise DbtRuntimeError(
+                "token must not be set when authenticator is 'externalbrowser'"
+            )
+        names = ("host", "database", "schema", "user", "sslrootcert")
+        if self.authenticator == "token":
+            names = ("token", *names)
+        for name in names:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
                 raise DbtRuntimeError(
@@ -68,6 +88,7 @@ class MotherDuckCredentials(Credentials):
     def _connection_keys(self):
         return (
             "host",
+            "authenticator",
             "port",
             "user",
             "database",
