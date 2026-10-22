@@ -127,7 +127,9 @@ class TestQuotedForeignKeys:
         }
 
     def test_quoted_parent_is_resolved_and_enforced(self, project):
-        results = run_dbt(["run"])
+        # two models being built concurrently, each creating a foreign key
+        # referencing the same parent table can run into write-write conflicts
+        results = run_dbt(["run", "--threads", "1"])
         assert len(results) == 3
         for result in results:
             if result.node.name == "parent":
