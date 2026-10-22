@@ -8,6 +8,7 @@ page. The resulting token is cached in the CLI's credentials file, so
 
 import base64
 import contextlib
+import http.client
 import json
 import os
 import sys
@@ -17,7 +18,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 
 # TODO: register a dedicated Auth0 application for dbt-motherduck. The prototype
 # reuses the MotherDuck CLI's client, whose logins yield short-lived tokens.
@@ -37,6 +38,26 @@ EXPIRY_LEEWAY_SECONDS = 300
 
 class BrowserAuthError(Exception):
     pass
+
+
+# Every token this process has used, so error messages can redact them. Replaced
+# rather than mutated, so readers never need the lock.
+_issued_tokens = ()
+_issued_tokens_lock = Lock()
+
+
+def _record_issued_token(token):
+    global _issued_tokens
+    with _issued_tokens_lock:
+        if token not in _issued_tokens:
+            _issued_tokens = (*_issued_tokens, token)
+
+
+def redact(message, *secrets):
+    for secret in (*secrets, *_issued_tokens):
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message
 
 
 def credentials_file_path():
@@ -67,10 +88,15 @@ def save_token(path, token):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-        json.dump({"version": 1, "motherduck_token": token}, file, indent=2)
-        file.write("\n")
-    os.replace(temporary, path)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump({"version": 1, "motherduck_token": token}, file, indent=2)
+            file.write("\n")
+        os.replace(temporary, path)
+    except BaseException:
+        # Never leave a copy of the token behind.
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def token_expired(token, now=None):
@@ -88,6 +114,14 @@ def token_expired(token, now=None):
     return expires_at - EXPIRY_LEEWAY_SECONDS <= (time.time() if now is None else now)
 
 
+def can_open_browser():
+    # Without a display, webbrowser falls back to console browsers such as lynx,
+    # which take over the terminal and hide the printed login code.
+    if sys.platform.startswith(("linux", "freebsd", "openbsd", "netbsd")):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
 def http_request(url, *, data=None, headers=None):
     """Return the status and decoded JSON body (or None) for a request."""
     body = None if data is None else urllib.parse.urlencode(data).encode()
@@ -95,10 +129,17 @@ def http_request(url, *, data=None, headers=None):
     if body is not None:
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            status, raw = response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        status, raw = exc.code, exc.read()
+        try:
+            with urllib.request.urlopen(
+                request, timeout=HTTP_TIMEOUT_SECONDS
+            ) as response:
+                status, raw = response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            status, raw = exc.code, exc.read()
+    except http.client.HTTPException as exc:
+        # Dropped connections (RemoteDisconnected, IncompleteRead) are not OSErrors;
+        # surface them as one so callers treat them like other network errors.
+        raise ConnectionError(f"{type(exc).__name__}: {exc}") from exc
     try:
         return status, json.loads(raw) if raw else None
     except ValueError:
@@ -113,25 +154,37 @@ class BrowserAuthenticator:
         *,
         request=http_request,
         open_browser=webbrowser.open,
-        sleep=time.sleep,
+        can_open_browser=can_open_browser,
+        canceled=None,
+        sleep=None,
         clock=time.monotonic,
         output=None,
     ):
         self._request = request
         self._open_browser = open_browser
-        self._sleep = sleep
+        self._can_open_browser = can_open_browser
+        # Set when the dbt invocation is cancelled, to stop waiting for a login.
+        self._canceled = canceled or Event()
+        self._sleep = sleep or self._canceled.wait
         self._clock = clock
         self._output = output
         self._lock = Lock()
         self._token = None
-        # Every token this process has used, so error messages can redact them.
-        self.issued_tokens = set()
+        self._failure = None
 
     def get_token(self):
         with self._lock:
+            # A failed login is final for the process; otherwise every worker
+            # thread would start its own login and wait for it to expire.
+            if self._failure is not None:
+                raise BrowserAuthError(str(self._failure))
             if self._token is None or token_expired(self._token):
-                self._token = self._resolve_token()
-                self.issued_tokens.add(self._token)
+                try:
+                    self._token = self._resolve_token()
+                except BrowserAuthError as exc:
+                    self._failure = exc
+                    raise
+                _record_issued_token(self._token)
             return self._token
 
     def invalidate(self, token):
@@ -190,9 +243,10 @@ class BrowserAuthenticator:
             f"  URL:  {url}\n"
             f"  Code: {device['user_code']}"
         )
-        # The printed URL is enough; headless machines often have no browser.
-        with contextlib.suppress(Exception):
-            self._open_browser(url)
+        if self._can_open_browser():
+            # The printed URL is enough if no browser can be opened.
+            with contextlib.suppress(Exception):
+                self._open_browser(url)
         id_token = self._poll_for_id_token(device)
         return self._exchange_for_motherduck_token(id_token)
 
@@ -200,7 +254,7 @@ class BrowserAuthenticator:
         interval = device.get("interval") or 5
         deadline = self._clock() + (device.get("expires_in") or 300)
         while self._clock() < deadline:
-            self._sleep(interval)
+            self._wait(interval)
             try:
                 status, body = self._request(
                     OAUTH_TOKEN_URL,
@@ -237,7 +291,7 @@ class BrowserAuthenticator:
                     headers={"Authorization": f"Bearer {id_token}"},
                 )
             except OSError:
-                self._sleep(0.5)
+                self._wait(0.5)
                 continue
             body = body if isinstance(body, dict) else {}
             if status == 200 and isinstance(body.get("token"), str) and body["token"]:
@@ -247,8 +301,13 @@ class BrowserAuthenticator:
                 if body.get("requiredAlternateLoginMethodDisplayName"):
                     detail += f"; log in with {body['requiredAlternateLoginMethodDisplayName']}"
                 raise BrowserAuthError(f"MotherDuck login failed: {detail}")
-            self._sleep(0.5)
+            self._wait(0.5)
         raise BrowserAuthError("MotherDuck token exchange timed out. Please try again.")
+
+    def _wait(self, seconds):
+        self._sleep(seconds)
+        if self._canceled.is_set():
+            raise BrowserAuthError("MotherDuck login was cancelled.")
 
     def _print(self, message):
         print(message, file=self._output or sys.stderr, flush=True)

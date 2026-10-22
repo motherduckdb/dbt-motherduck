@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import http.client
 import io
 import json
 import multiprocessing
@@ -94,13 +95,15 @@ class FakeClock:
         return self.now
 
 
-def make_authenticator(server, opened=None):
+def make_authenticator(server, opened=None, **kwargs):
     clock = FakeClock()
     output = io.StringIO()
     authenticator = BrowserAuthenticator(
         request=server,
         open_browser=(opened.append if opened is not None else lambda url: None),
-        sleep=clock.sleep,
+        can_open_browser=kwargs.pop("can_open_browser", lambda: True),
+        sleep=kwargs.pop("sleep", clock.sleep),
+        **kwargs,
         clock=clock,
         output=output,
     )
@@ -156,6 +159,7 @@ def test_device_flow_logs_in_and_saves_token(motherduck_home):
         # Expiring inside the leeway counts as expired.
         jwt(time.time() + 60),
     ],
+    ids=["expired", "inside_leeway"],
 )
 def test_expired_saved_token_triggers_login(motherduck_home, saved):
     write_saved_token(motherduck_home, saved)
@@ -175,6 +179,7 @@ def test_expired_saved_token_triggers_login(motherduck_home, saved):
         json.dumps({"version": 1, "motherduck_token": " "}),
         json.dumps([VALID_TOKEN]),
     ],
+    ids=["not_json", "wrong_version", "blank_token", "not_object"],
 )
 def test_unreadable_saved_token_triggers_login(motherduck_home, contents):
     motherduck_home.mkdir()
@@ -240,7 +245,7 @@ def test_invalidate_forgets_rejected_token(motherduck_home):
 
     authenticator.invalidate(VALID_TOKEN)
     assert authenticator.get_token() == fresh
-    assert authenticator.issued_tokens == {VALID_TOKEN, fresh}
+    assert {VALID_TOKEN, fresh} <= set(browser_auth._issued_tokens)
 
 
 def test_invalidate_keeps_file_written_by_another_login(motherduck_home):
@@ -400,3 +405,107 @@ def test_token_authenticator_does_not_use_browser(monkeypatch):
     with pytest.raises(FailedToConnectError):
         manager.open(connection)
     assert passwords == ["secret"]
+
+
+def test_failed_login_is_not_retried_by_other_callers():
+    server = FakeServer([(403, {"error": "access_denied"})])
+    authenticator, _, _ = make_authenticator(server)
+    for _ in range(3):
+        with pytest.raises(BrowserAuthError, match="access_denied"):
+            authenticator.get_token()
+    assert server.count(browser_auth.OAUTH_DEVICE_CODE_URL) == 1
+
+
+def test_cancellation_stops_waiting_for_login():
+    canceled = threading.Event()
+    server = FakeServer([(403, {"error": "authorization_pending"})] * 10)
+    authenticator, _, _ = make_authenticator(
+        server, canceled=canceled, sleep=lambda seconds: canceled.set()
+    )
+    with pytest.raises(BrowserAuthError, match="cancelled"):
+        authenticator.get_token()
+    assert server.count(browser_auth.OAUTH_TOKEN_URL) == 0
+
+
+def test_default_wait_returns_early_when_canceled():
+    canceled = threading.Event()
+    canceled.set()
+    server = FakeServer([(403, {"error": "authorization_pending"})])
+    authenticator = BrowserAuthenticator(
+        request=server,
+        open_browser=lambda url: None,
+        can_open_browser=lambda: True,
+        canceled=canceled,
+        output=io.StringIO(),
+    )
+    started = time.monotonic()
+    with pytest.raises(BrowserAuthError, match="cancelled"):
+        authenticator.get_token()
+    assert time.monotonic() - started < DEVICE["interval"]
+
+
+def test_browser_not_opened_without_display():
+    server = FakeServer([(200, {"id_token": "id-token"})])
+    opened = []
+    authenticator, _, output = make_authenticator(
+        server, opened, can_open_browser=lambda: False
+    )
+    assert authenticator.get_token() == VALID_TOKEN
+    assert opened == []
+    assert DEVICE["verification_uri_complete"] in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    "platform, env, expected",
+    [
+        ("linux", {}, False),
+        ("linux", {"DISPLAY": ":0"}, True),
+        ("linux", {"WAYLAND_DISPLAY": "wayland-0"}, True),
+        ("darwin", {}, True),
+        ("win32", {}, True),
+    ],
+)
+def test_can_open_browser(monkeypatch, platform, env, expected):
+    monkeypatch.setattr(browser_auth.sys, "platform", platform)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert browser_auth.can_open_browser() is expected
+
+
+def test_dropped_http_connection_is_a_network_error(monkeypatch):
+    def urlopen(request, timeout):
+        raise http.client.RemoteDisconnected("closed")
+
+    monkeypatch.setattr(browser_auth.urllib.request, "urlopen", urlopen)
+    with pytest.raises(ConnectionError, match="RemoteDisconnected"):
+        browser_auth.http_request(browser_auth.OAUTH_TOKEN_URL, data={})
+
+
+def test_failed_save_leaves_no_token_behind(monkeypatch, tmp_path):
+    def replace(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(browser_auth.os, "replace", replace)
+    with pytest.raises(OSError, match="replace failed"):
+        browser_auth.save_token(tmp_path / "credentials.json", VALID_TOKEN)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_rollback_failure_is_redacted_without_profile_token(monkeypatch):
+    browser_auth._record_issued_token(VALID_TOKEN)
+    events = []
+    monkeypatch.setattr("dbt.adapters.motherduck.connections.fire_event", events.append)
+
+    class FailingHandle:
+        def rollback(self):
+            raise psycopg.OperationalError(f"rollback failed for {VALID_TOKEN}")
+
+    connection = SimpleNamespace(
+        name="test", handle=FailingHandle(), credentials=browser_credentials()
+    )
+    MotherDuckConnectionManager._rollback_handle(connection)
+    (event,) = events
+    assert "rollback failed" in event.exc_info
+    assert VALID_TOKEN not in event.exc_info

@@ -24,7 +24,11 @@ from dbt_common.utils import cast_to_str
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
-from dbt.adapters.motherduck.browser_auth import BrowserAuthenticator, BrowserAuthError
+from dbt.adapters.motherduck.browser_auth import (
+    BrowserAuthenticator,
+    BrowserAuthError,
+    redact,
+)
 
 
 class MotherDuckConnectionManager(SQLConnectionManager):
@@ -39,7 +43,9 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # returns which databases are needed to run the dbt project.
         self.databases_needed_callback = self._uninitialized_databases_needed
         # Shared by all threads so `authenticator: externalbrowser` logs in once per run.
-        self.browser_authenticator = BrowserAuthenticator()
+        self.browser_authenticator = BrowserAuthenticator(
+            canceled=self.invocation_canceled
+        )
 
     def open(self, connection):
         if self.invocation_canceled.is_set():
@@ -113,11 +119,9 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             self.browser_authenticator.invalidate(token)
             return connect(self.browser_authenticator.get_token())
 
-    def _redact(self, message, credentials):
-        for secret in (credentials.token, *self.browser_authenticator.issued_tokens):
-            if secret:
-                message = message.replace(secret, "[REDACTED]")
-        return message
+    @staticmethod
+    def _redact(message, credentials):
+        return redact(message, credentials.token)
 
     def release(self):
         # default .release() just .close()s the connections,
@@ -368,9 +372,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             fire_event(
                 RollbackFailed(
                     conn_name=cast_to_str(connection.name),
-                    exc_info=format_exc().replace(
-                        connection.credentials.token, "[REDACTED]"
-                    ),
+                    exc_info=cls._redact(format_exc(), connection.credentials),
                     node_info=get_node_info(),
                 )
             )
