@@ -67,6 +67,31 @@ select 1::integer as id, 1.5::decimal(18, 2) as amount, 'x'::varchar as label,
             "nested": "STRUCT(fname VARCHAR, age INTEGER)",
         }
 
+    def test_schema_inspection_preserves_nested_type_strings(self, project):
+        sql = """
+select
+    payload: cast(null as struct(
+        "a b" integer,
+        "a,b" varchar,
+        "a""b" bigint,
+        e enum('a''"(,)'),
+        nested struct("c,d" decimal(10,2))
+    )),
+    items: [{'a': 1}],
+    pair: row(1, 'x')
+"""
+        with get_connection(project.adapter):
+            columns = project.adapter.get_column_schema_from_query(sql)
+        assert [(column.name, column.dtype) for column in columns] == [
+            (
+                "payload",
+                """STRUCT("a b" INTEGER, "a,b" VARCHAR, "a""b" BIGINT, """
+                """e ENUM('a''"(,)'), nested STRUCT("c,d" DECIMAL(10,2)))""",
+            ),
+            ("items", "STRUCT(a INTEGER)[]"),
+            ("pair", "STRUCT(INTEGER, VARCHAR)"),
+        ]
+
 
 class TestCatalogRelations:
     @pytest.fixture(scope="class")
