@@ -29,7 +29,6 @@ jobs:
     timeout-minutes: 90
     env:
       DBT_ENV_SECRET_MOTHERDUCK_TOKEN: ${{ secrets.DBT_ENV_SECRET_MOTHERDUCK_TOKEN }}
-      MOTHERDUCK_INITIAL_DATABASE: ${{ vars.MOTHERDUCK_INITIAL_DATABASE }}
       MOTHERDUCK_TEST_RUN_ID: >-
         ecosystem-${{ github.run_number }}-${{ github.run_attempt }}
     steps:

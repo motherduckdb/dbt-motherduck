@@ -119,7 +119,6 @@ jobs:
         database-type: [native, ducklake]
     env:
       DBT_ENV_SECRET_MOTHERDUCK_TOKEN: ${{ secrets.DBT_ENV_SECRET_MOTHERDUCK_TOKEN }}
-      MOTHERDUCK_INITIAL_DATABASE: ${{ vars.MOTHERDUCK_INITIAL_DATABASE }}
       # Names the disposable databases. Includes the matrix leg because both legs
       # of a run share a run number.
       MOTHERDUCK_TEST_RUN_ID: >-

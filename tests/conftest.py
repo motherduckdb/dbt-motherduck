@@ -73,7 +73,9 @@ def provisioning_profile_data():
     return {
         "type": "motherduck",
         "host": os.environ.get("MOTHERDUCK_PG_HOST", "pg.us-east-1-aws.motherduck.com"),
-        "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
+        # The workspace: the admin connection needs no database of its own, and
+        # profile_data swaps in the disposable one for dbt.
+        "database": "md:",
         "schema": "main",
         "token": token,
         "threads": 2,
@@ -98,7 +100,6 @@ def admin_connection(provisioning_profile_data):
         sslmode="verify-full",
         sslrootcert=credentials.sslrootcert,
         connect_timeout=credentials.connect_timeout,
-        options="-c attach_mode=single",
         autocommit=True,
     )
     try:
@@ -225,7 +226,7 @@ def drop_deferred_databases(names):
             "host": os.environ.get(
                 "MOTHERDUCK_PG_HOST", "pg.us-east-1-aws.motherduck.com"
             ),
-            "database": os.environ["MOTHERDUCK_INITIAL_DATABASE"],
+            "database": "md:",
             "schema": "main",
             "token": token,
             "connect_timeout": 30,
@@ -247,7 +248,6 @@ def drop_deferred_databases(names):
                         sslmode="verify-full",
                         sslrootcert=credentials.sslrootcert,
                         connect_timeout=credentials.connect_timeout,
-                        options="-c attach_mode=single",
                         autocommit=True,
                     )
                 connection.execute(

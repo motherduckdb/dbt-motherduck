@@ -21,7 +21,6 @@ MotherDuck endpoint used for disposable test databases:
 
 ```shell
 export DBT_ENV_SECRET_MOTHERDUCK_TOKEN="<a MotherDuck token>"
-export MOTHERDUCK_INITIAL_DATABASE="<the database containing the test duckling>"
 export MOTHERDUCK_TEST_RUN_ID="$(whoami)-local-$(date +%s)"
 uv run pytest
 ```
