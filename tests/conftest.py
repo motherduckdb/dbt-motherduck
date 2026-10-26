@@ -65,7 +65,11 @@ def test_run_id():
 def provisioning_profile_data():
     token = os.environ.get("DBT_ENV_SECRET_MOTHERDUCK_TOKEN")
     if not token:
-        pytest.skip("Set DBT_ENV_SECRET_MOTHERDUCK_TOKEN to run endpoint tests")
+        pytest.fail(
+            "Set DBT_ENV_SECRET_MOTHERDUCK_TOKEN to run endpoint tests, or select "
+            "only the unit tests with -m unit.",
+            pytrace=False,
+        )
     return {
         "type": "motherduck",
         "host": os.environ.get("MOTHERDUCK_PG_HOST", "pg.us-east-1-aws.motherduck.com"),
