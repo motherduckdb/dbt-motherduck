@@ -52,7 +52,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             handle = psycopg.connect(
                 host=credentials.host,
                 port=credentials.port,
-                user=credentials.user,
+                user="postgres",
                 password=credentials.token,
                 dbname=credentials.database,
                 sslmode="verify-full",

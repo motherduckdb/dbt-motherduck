@@ -13,7 +13,6 @@ def test_defaults():
         host="example.com", token="secret", database="db", schema="main"
     )
     assert credentials.port == 5432
-    assert credentials.user == "postgres"
     assert credentials.sslrootcert == certifi.where()
     assert credentials.connect_timeout == 240
     assert credentials.attach_databases == []
@@ -43,7 +42,6 @@ def test_certificate_override(sslrootcert):
         {"database": "host=other-server"},
         {"database": "postgresql://other-server/db"},
         {"schema": ""},
-        {"user": ""},
         {"sslrootcert": ""},
         {"port": 0},
         {"port": 65536},
