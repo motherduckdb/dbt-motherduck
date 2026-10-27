@@ -1,8 +1,8 @@
 # DuckLake
 
-TODO: Jus tmention that database type is autodiscoverable, and that target databases need to be created before hand. If you want to use ducklake just point your profile or models to a ducklake database.
+The type of each database is detected automatically, so to use DuckLake you just need to point the dbt profile or a model's `database` at an existing DuckLake database.
 
-Create the database in MotherDuck before running dbt with [`CREATE DATABASE`](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/create-database/):
+You can create a DuckLake in MotherDuck before running dbt with [`CREATE DATABASE (type ducklake)`](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/create-database/):
 
 ```sql
 create database lakehouse (type ducklake);
@@ -12,9 +12,8 @@ See the [MotherDuck DuckLake guide](https://motherduck.com/docs/integrations/fil
 
 ## Partitioning and sort order
 
-TODO: mention that these are only supported on ducklake
-
-Configure table layout under `config.meta`:
+Partitioning and sort order are supported on DuckLake databases. Configure
+them under `config.meta`:
 
 ```sql
 {{ config(
@@ -36,7 +35,6 @@ from {{ source('raw', 'events') }}
 | `sorted_by` | `sort_by` | A column name or a list of column names, such as `event_time` or `['event_time', 'event_id']`. |
 
 [Partitioning](https://ducklake.select/docs/stable/duckdb/advanced_features/partitioning) groups new data into files by partition keys. A [sort order](https://ducklake.select/docs/stable/duckdb/advanced_features/sorted_tables) organizes data within files, improving the statistics used to skip irrelevant data. Choose keys that match common filters.
-
 
 ## Limitations
 
