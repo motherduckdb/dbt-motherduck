@@ -30,7 +30,6 @@ class MotherDuckRelation(BaseRelation):
                     "merge_on_using_columns",
                     "merge_update_set_expressions",
                     "merge_clauses",
-                    "merge_returning_columns",
                     "partitioned_by",
                     "partition_by",
                     "sorted_by",
