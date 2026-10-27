@@ -1,18 +1,19 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, get_args
 
 import certifi
 from dbt.adapters.contracts.connection import Credentials
 from dbt_common.exceptions import DbtRuntimeError
 
-AUTHENTICATORS = ("token", "externalbrowser")
+Authenticator = Literal["token", "externalbrowser"]
+AUTHENTICATORS = get_args(Authenticator)
 
 
 @dataclass
 class MotherDuckCredentials(Credentials):
     host: str
     token: str | None = field(default=None, repr=False)
-    authenticator: str = "token"
+    authenticator: Authenticator = "token"
     # Overrides the Auth0 application that `externalbrowser` logs in through.
     oauth_client_id: str | None = None
     port: int = 5432

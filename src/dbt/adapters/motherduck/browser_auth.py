@@ -253,6 +253,7 @@ class BrowserAuthenticator:
 
     def _poll_for_id_token(self, device, client_id):
         interval = device.get("interval") or 5
+        # Auth0 sets expires_in (900 seconds today); 300 is only a fallback.
         deadline = self._clock() + (device.get("expires_in") or 300)
         while self._clock() < deadline:
             self._wait(interval)

@@ -41,21 +41,25 @@ VALID_TOKEN = jwt(time.time() + 86400)
 EXPIRED_TOKEN = jwt(time.time() - 60)
 
 
+# Messages the MotherDuck PG endpoint sends when it rejects a token.
+GARBAGE_TOKEN_ERROR = "FATAL:  invalid username/password"
+EXPIRED_TOKEN_ERROR = (
+    "FATAL:  could not connect to database: Invalid Input Error: Request failed: "
+    "Your request is not authenticated. Please check your MotherDuck token. "
+    "(Jwt is expired, request id: 'abc')"
+)
+
+
 @pytest.fixture(autouse=True)
-def motherduck_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOTHERDUCK_HOME", str(tmp_path / "home"))
-    return tmp_path / "home"
-
-
-def credentials_file(home):
+def credentials_file(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("MOTHERDUCK_HOME", str(home))
     return home / "credentials.json"
 
 
-def write_saved_token(home, token):
-    home.mkdir(parents=True, exist_ok=True)
-    credentials_file(home).write_text(
-        json.dumps({"version": 1, "motherduck_token": token})
-    )
+def saved_credentials(token):
+    return json.dumps({"version": 1, "motherduck_token": token})
 
 
 class FakeServer:
@@ -110,15 +114,15 @@ def make_authenticator(server, opened=None, **kwargs):
     return authenticator, clock, output
 
 
-def test_saved_token_is_reused_without_login(motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+def test_saved_token_is_reused_without_login(credentials_file):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     server = FakeServer([])
     authenticator, _, _ = make_authenticator(server)
     assert authenticator.get_token() == VALID_TOKEN
     assert server.requests == []
 
 
-def test_device_flow_logs_in_and_saves_token(motherduck_home):
+def test_device_flow_logs_in_and_saves_token(credentials_file):
     server = FakeServer(
         [
             (403, {"error": "authorization_pending"}),
@@ -141,7 +145,7 @@ def test_device_flow_logs_in_and_saves_token(motherduck_home):
     lookup_url, _, headers = server.requests[-1]
     assert lookup_url.endswith("/mom/lookup-user")
     assert headers == {"Authorization": "Bearer id-token"}
-    path = credentials_file(motherduck_home)
+    path = credentials_file
     assert json.loads(path.read_text()) == {
         "version": 1,
         "motherduck_token": VALID_TOKEN,
@@ -161,14 +165,12 @@ def test_device_flow_logs_in_and_saves_token(motherduck_home):
     ],
     ids=["expired", "inside_leeway"],
 )
-def test_expired_saved_token_triggers_login(motherduck_home, saved):
-    write_saved_token(motherduck_home, saved)
+def test_expired_saved_token_triggers_login(credentials_file, saved):
+    credentials_file.write_text(saved_credentials(saved))
     server = FakeServer([(200, {"id_token": "id-token"})])
     authenticator, _, _ = make_authenticator(server)
     assert authenticator.get_token() == VALID_TOKEN
-    assert json.loads(credentials_file(motherduck_home).read_text())[
-        "motherduck_token"
-    ] == (VALID_TOKEN)
+    assert json.loads(credentials_file.read_text())["motherduck_token"] == (VALID_TOKEN)
 
 
 @pytest.mark.parametrize(
@@ -181,9 +183,8 @@ def test_expired_saved_token_triggers_login(motherduck_home, saved):
     ],
     ids=["not_json", "wrong_version", "blank_token", "not_object"],
 )
-def test_unreadable_saved_token_triggers_login(motherduck_home, contents):
-    motherduck_home.mkdir()
-    credentials_file(motherduck_home).write_text(contents)
+def test_unreadable_saved_token_triggers_login(credentials_file, contents):
+    credentials_file.write_text(contents)
     server = FakeServer([(200, {"id_token": "id-token"})])
     authenticator, _, _ = make_authenticator(server)
     assert authenticator.get_token() == VALID_TOKEN
@@ -233,8 +234,8 @@ def test_unreachable_login_service_raises():
         authenticator.get_token()
 
 
-def test_invalidate_forgets_rejected_token(motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+def test_invalidate_forgets_rejected_token(credentials_file):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     fresh = jwt(time.time() + 7200)
     server = FakeServer([(200, {"id_token": "id-token"})], [(200, {"token": fresh})])
     authenticator, _, _ = make_authenticator(server)
@@ -248,12 +249,12 @@ def test_invalidate_forgets_rejected_token(motherduck_home):
     assert {VALID_TOKEN, fresh} <= set(browser_auth._issued_tokens)
 
 
-def test_invalidate_keeps_file_written_by_another_login(motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+def test_invalidate_keeps_file_written_by_another_login(credentials_file):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     authenticator, _, _ = make_authenticator(FakeServer([]))
     authenticator.get_token()
     other = jwt(time.time() + 7200)
-    write_saved_token(motherduck_home, other)
+    credentials_file.write_text(saved_credentials(other))
     authenticator.invalidate(VALID_TOKEN)
     assert authenticator.get_token() == other
 
@@ -338,8 +339,8 @@ def browser_credentials():
     )
 
 
-def test_open_uses_browser_token(monkeypatch, motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+def test_open_uses_browser_token(monkeypatch, credentials_file):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     handle = FakeHandle()
     manager, connection, passwords = open_connection(
         monkeypatch, browser_credentials(), [handle]
@@ -350,27 +351,48 @@ def test_open_uses_browser_token(monkeypatch, motherduck_home):
     assert passwords == [VALID_TOKEN]
 
 
-def test_open_logs_in_again_when_token_is_rejected(monkeypatch, motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+@pytest.mark.parametrize(
+    "rejection", [GARBAGE_TOKEN_ERROR, EXPIRED_TOKEN_ERROR], ids=["garbage", "expired"]
+)
+def test_open_logs_in_again_when_token_is_rejected(
+    monkeypatch, credentials_file, rejection
+):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     fresh = jwt(time.time() + 7200)
     server = FakeServer([(200, {"id_token": "id-token"})], [(200, {"token": fresh})])
     handle = FakeHandle()
     manager, connection, passwords = open_connection(
         monkeypatch,
         browser_credentials(),
-        [psycopg.errors.InvalidPassword("Jwt is expired"), handle],
+        [psycopg.OperationalError(rejection), handle],
     )
     manager.browser_authenticator, _, _ = make_authenticator(server)
     manager.open(connection)
     assert connection.handle is handle
     assert passwords == [VALID_TOKEN, fresh]
-    assert json.loads(credentials_file(motherduck_home).read_text())[
-        "motherduck_token"
-    ] == (fresh)
+    assert json.loads(credentials_file.read_text())["motherduck_token"] == (fresh)
 
 
-def test_open_reports_login_failure_and_redacts(monkeypatch, motherduck_home):
-    write_saved_token(motherduck_home, VALID_TOKEN)
+def test_open_does_not_log_in_again_for_other_connection_errors(
+    monkeypatch, credentials_file
+):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
+    server = FakeServer([])
+    manager, connection, passwords = open_connection(
+        monkeypatch,
+        browser_credentials(),
+        [psycopg.OperationalError("FATAL:  no database/share named 'db'")],
+    )
+    manager.browser_authenticator, _, _ = make_authenticator(server)
+    with pytest.raises(FailedToConnectError, match="no database/share named"):
+        manager.open(connection)
+    assert passwords == [VALID_TOKEN]
+    assert server.requests == []
+    assert json.loads(credentials_file.read_text())["motherduck_token"] == VALID_TOKEN
+
+
+def test_open_reports_login_failure_and_redacts(monkeypatch, credentials_file):
+    credentials_file.write_text(saved_credentials(VALID_TOKEN))
     manager, connection, _ = open_connection(
         monkeypatch,
         browser_credentials(),
@@ -400,7 +422,7 @@ def test_token_authenticator_does_not_use_browser(monkeypatch):
         host="example.com", token="secret", database="db", schema="main"
     )
     manager, connection, passwords = open_connection(
-        monkeypatch, credentials, [psycopg.errors.InvalidPassword("bad")]
+        monkeypatch, credentials, [psycopg.OperationalError(GARBAGE_TOKEN_ERROR)]
     )
     with pytest.raises(FailedToConnectError):
         manager.open(connection)
@@ -483,14 +505,14 @@ def test_dropped_http_connection_is_a_network_error(monkeypatch):
         browser_auth.http_request(browser_auth.OAUTH_TOKEN_URL, data={})
 
 
-def test_failed_save_leaves_no_token_behind(monkeypatch, tmp_path):
+def test_failed_save_leaves_no_token_behind(monkeypatch, credentials_file):
     def replace(source, destination):
         raise OSError("replace failed")
 
     monkeypatch.setattr(browser_auth.os, "replace", replace)
     with pytest.raises(OSError, match="replace failed"):
-        browser_auth.save_token(tmp_path / "credentials.json", VALID_TOKEN)
-    assert list(tmp_path.iterdir()) == []
+        browser_auth.save_token(credentials_file, VALID_TOKEN)
+    assert list(credentials_file.parent.iterdir()) == []
 
 
 def test_rollback_failure_is_redacted_without_profile_token(monkeypatch):

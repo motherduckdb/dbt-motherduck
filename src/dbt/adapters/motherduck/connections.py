@@ -31,6 +31,25 @@ from dbt.adapters.motherduck.browser_auth import (
     redact,
 )
 
+# libpq drops the server's SQLSTATE for errors raised while connecting, so a
+# rejected token can only be recognized by the MotherDuck PG endpoint's messages.
+AUTH_FAILURE_MESSAGES = (
+    # The password is not a MotherDuck token at all.
+    "invalid username/password",
+    # The endpoint reports these as invalid_password (28P01).
+    "Invalid token or user",
+    "Jwt is expired",
+    "user not found",
+    "not authenticated",
+)
+
+
+def is_auth_failure(exc):
+    return isinstance(exc, psycopg.OperationalError) and (
+        exc.sqlstate == "28P01"
+        or any(message in str(exc) for message in AUTH_FAILURE_MESSAGES)
+    )
+
 
 class MotherDuckConnectionManager(SQLConnectionManager):
     TYPE = "motherduck"
@@ -116,8 +135,11 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         token = self.browser_authenticator.get_token(client_id)
         try:
             return connect(token)
-        except psycopg.errors.InvalidPassword:
-            # The cached login was revoked or expired early: log in again once.
+        except psycopg.OperationalError as exc:
+            if not is_auth_failure(exc):
+                raise
+            # The saved login was revoked, expired early, or is not a valid token:
+            # log in again once.
             self.browser_authenticator.invalidate(token)
             return connect(self.browser_authenticator.get_token(client_id))
 
