@@ -11,7 +11,7 @@ class MotherDuckCredentials(Credentials):
     host: str
     token: str = field(repr=False)
     port: int = 5432
-    sslrootcert: str = field(default_factory=certifi.where)
+    sslrootcert: str = "certifi"
     connect_timeout: int = 240
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -55,6 +55,10 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError(
                 "settings must be a mapping of non-empty setting names to string, boolean, or numeric values, without NUL characters"
             )
+
+    @property
+    def resolved_sslrootcert(self):
+        return certifi.where() if self.sslrootcert == "certifi" else self.sslrootcert
 
     @property
     def type(self):

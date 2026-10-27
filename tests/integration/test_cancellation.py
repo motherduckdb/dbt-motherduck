@@ -260,7 +260,7 @@ def _exercise_dbt_cancellation():
         password=credentials.token,
         dbname=credentials.database,
         sslmode="verify-full",
-        sslrootcert=credentials.sslrootcert,
+        sslrootcert=credentials.resolved_sslrootcert,
         connect_timeout=credentials.connect_timeout,
         options="-c attach_mode=single",
         autocommit=True,

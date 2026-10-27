@@ -94,7 +94,7 @@ def admin_connection(provisioning_profile_data):
         password=credentials.token,
         dbname=credentials.database,
         sslmode="verify-full",
-        sslrootcert=credentials.sslrootcert,
+        sslrootcert=credentials.resolved_sslrootcert,
         connect_timeout=credentials.connect_timeout,
         autocommit=True,
     )

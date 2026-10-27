@@ -13,14 +13,22 @@ def test_defaults():
         host="example.com", token="secret", database="db", schema="main"
     )
     assert credentials.port == 5432
-    assert credentials.sslrootcert == certifi.where()
+    assert credentials.sslrootcert == "certifi"
+    assert credentials.resolved_sslrootcert == certifi.where()
     assert credentials.connect_timeout == 240
     assert credentials.attach_databases == []
     assert credentials.settings == {}
 
 
-@pytest.mark.parametrize("sslrootcert", ["system", "/path/to/custom-ca.pem"])
-def test_certificate_override(sslrootcert):
+@pytest.mark.parametrize(
+    "sslrootcert, expected",
+    [
+        ("certifi", certifi.where()),
+        ("system", "system"),
+        ("/path/to/custom-ca.pem", "/path/to/custom-ca.pem"),
+    ],
+)
+def test_certificate_override(sslrootcert, expected):
     credentials = MotherDuckCredentials.from_dict(
         {
             "host": "example.com",
@@ -31,6 +39,27 @@ def test_certificate_override(sslrootcert):
         }
     )
     assert credentials.sslrootcert == sslrootcert
+    assert credentials.resolved_sslrootcert == expected
+
+
+@pytest.mark.parametrize("sslrootcert", [None, "certifi"])
+def test_certifi_default_exposed_in_target(cli_project, sslrootcert):
+    if sslrootcert is not None:
+        profiles_file = cli_project / "profiles.yml"
+        profiles = json.loads(profiles_file.read_text())
+        profiles["test"]["outputs"]["test"]["sslrootcert"] = sslrootcert
+        profiles_file.write_text(json.dumps(profiles))
+    (cli_project / "models" / "certificate.sql").write_text(
+        "select certificate: '{{ target.sslrootcert }}'"
+    )
+    code, output = invoke_dbt(
+        cli_project, "compile", "--no-populate-cache", "--no-introspect"
+    )
+    assert code == 0, output
+    manifest = json.loads((cli_project / "target" / "manifest.json").read_text())
+    assert manifest["nodes"]["model.cli_test.certificate"]["compiled_code"] == (
+        "select certificate: 'certifi'"
+    )
 
 
 @pytest.mark.parametrize(
