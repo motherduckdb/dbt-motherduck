@@ -25,27 +25,21 @@ sources:
 Reference the source normally:
 
 ```sql
--- a model .sql file
-
 select * from {{ source('files', 'events') }}
 ```
 
-TODO: simplify this paragraoh and the next. Just explain how the source macro expands  and mention the other available functions
-`source('files', 'events')` renders as `'s3://my-bucket/raw/events/*.parquet'`. A table-level location overrides the source default. You can also supply a reader call such as `read_parquet(...)`, `read_csv(...)`, or `read_json(...)` to set reader options or read a list of paths.
+`source('files', 'events')` expands to `'s3://my-bucket/raw/events/*.parquet'`,
+substituting `{name}` with the table's dbt name. Locations also support
+`{identifier}`, `{schema}`, and `{database}` from the
+source definition. A table-level `external_location` overrides the source default
+and can use `read_parquet(...)`, `read_csv(...)`, or `read_json(...)` to configure
+reader options.
 
-The default formatter substitutes `{name}`, `{identifier}`, `{schema}`, `{database}`, and other source metadata. Reader expressions containing literal braces, such as a CSV `types` mapping, need those braces escaped as `{{` and `}}`, or `formatter: oldstyle` to preserve them. Compatibility formatters also support `%(name)s` with `formatter: oldstyle` and `${name}` with `formatter: template`.
-
-
-TODO: Just mention that the only local files are seeds, and link to dbt seed docs, don't explain what they are
-For small, local CSV files, `dbt seed` is supported: dbt reads the file locally and sends its rows to MotherDuck.
+Local files are supported only through [dbt seeds](https://docs.getdbt.com/docs/build/seeds).
 
 ## Storage credentials
 
-If the location of the external source data is not public, you need to configure the required credentials as MotherDuck secrets (TODO docs link here)
-
-TODO: don't mention all this, just rely on people above looking into the docs
-`IN MOTHERDUCK` stores the secret in MotherDuck so it is available across that user's sessions, including dbt workers. `SCOPE` selects the paths that use these credentials. For temporary AWS credentials, also include `SESSION_TOKEN '<aws-session-token>'`. See the [MotherDuck `CREATE SECRET` reference](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/create-secret/) and [S3 credentials guide](https://motherduck.com/docs/integrations/cloud-storage/amazon-s3/) for the supported options.
-
+To read or write external data that is not public, configure credentials as [MotherDuck secrets](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/create-secret/).
 
 ## Writing files
 
@@ -60,5 +54,4 @@ TODO: don't mention all this, just rely on people above looking into the docs
 select * from {{ source('files', 'events') }}
 ```
 
-TODO: only to s3? no other location types?
-See [writing data to S3](https://motherduck.com/docs/key-tasks/cloud-storage/writing-to-s3/) for supported formats and export options.
+Exports also support [Google Cloud Storage](https://motherduck.com/docs/integrations/cloud-storage/google-cloud-storage/), [Cloudflare R2](https://motherduck.com/docs/integrations/cloud-storage/cloudflare-r2/), and [Azure Blob Storage](https://motherduck.com/docs/integrations/cloud-storage/azure-blob-storage/) with the provider's URI scheme and credentials. See [DuckDB `COPY`](https://duckdb.org/docs/stable/sql/statements/copy) for format and export options.

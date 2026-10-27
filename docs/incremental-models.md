@@ -1,13 +1,8 @@
 # Incremental models
 
-TODO: assume the reader know about incremental models, shorter 1 sentence intro linking to the dbt docs. No need to mention the is_incrementla macro or dbt commands. Do mention the materialized config, and `incremental_strategy`.
-
-Use `materialized='incremental'` and an `is_incremental()` filter to select the input for each update. The first build and `dbt run --full-refresh` rebuild the table. See dbt's [incremental models](https://docs.getdbt.com/docs/build/incremental-models) documentation for the general pattern.
+Configure [incremental models](https://docs.getdbt.com/docs/build/incremental-models) with `materialized='incremental'` and choosing and `incremental_strategy`.
 
 ## Incremental strategies
-
-TODO: The table is good keep it. Each subsequent section indent it under ## Incremental strategies, and the title of each should be each incremental strategy where it gets introduced first, and then options supported, and then tips if there's anything worth mentioning. For each strategy show a codeblock with a VERY MINIMAL compiled SQL output.
-
 
 | `incremental_strategy` | Behavior |
 | --- | --- |
@@ -16,57 +11,76 @@ TODO: The table is good keep it. Each subsequent section indent it under ## Incr
 | `merge` | Uses `MERGE INTO` to update matching keys and insert new ones. Without a key, the default merge appends. |
 | `microbatch` | Replaces each event-time window with delete and insert operations. Requires `event_time`, `batch_size`, and `begin`. |
 
-The default strategy is `delete+insert` if `incremental_strategy` is not set.
+The default strategy is `delete+insert`.
 
-## Timestamp pruning with delete+insert
+### delete+insert
 
-For time-organized data, include a timestamp column in the composite `unique_key` so the delete joins on both the identifier and timestamp:
+Replaces rows matching `unique_key`, which accepts a column name or a list of
+columns. Without a key, it appends. `incremental_predicates` can restrict the
+target delete, but must include every row the incoming data should replace.
 
-```sql
-{{ config(
-    materialized='incremental',
-    incremental_strategy='delete+insert',
-    unique_key=['event_id', 'event_time']
-) }}
-
-select event_id, event_time, payload
-from {{ source('raw', 'events') }}
-{% if is_incremental() %}
-where event_time >= current_timestamp - interval '3 days'
-{% endif %}
-```
-
-The list form generates a `DELETE ... USING` join with equality predicates for each key column. A narrow timestamp range in the incoming data can enable filter pushdown into the target scan, letting MotherDuck prune row groups by their timestamp statistics. This works best when target row groups cover narrow time ranges; pruning depends on the data layout and query plan. See DuckDB's [zonemap documentation](https://duckdb.org/docs/stable/guides/performance/indexing#zonemaps) for why ordering helps, and use MotherDuck's [`EXPLAIN ANALYZE`](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/explain-analyze/) to inspect the executed query plan.
-
-Use an immutable timestamp, such as an event's creation time, that is identical in the incoming and existing row. Adding a mutable `updated_at` to the key changes the match when it changes, leaving the old row behind. Key columns should be non-null. Choose a lookback window that covers the late-arriving data you need to reprocess.
-
-`incremental_predicates` can further restrict the target delete or merge scan. They must still include every target row that the incoming data should replace, or duplicates can remain.
-
-## Merge options
-
-Standard dbt options such as `merge_update_columns` and `merge_exclude_columns` stay at the config root. Adapter-specific options belong under `meta`: `merge_update_condition`, `merge_insert_condition`, `merge_on_using_columns`, `merge_update_set_expressions`, `merge_clauses`, and `merge_returning_columns`.
-
-For example, update existing rows only when the incoming version is newer:
+E.g. for `unique_key=['event_id', 'event_time']`:
 
 ```sql
-{{ config(
-    materialized='incremental',
-    incremental_strategy='merge',
-    unique_key='event_id',
-    meta={
-        'merge_update_condition':
-            'DBT_INTERNAL_SOURCE.updated_at > DBT_INTERNAL_DEST.updated_at'
-    }
-) }}
+BEGIN
+delete from target_table as DBT_INCREMENTAL_TARGET
+using incoming_rows
+where incoming_rows.event_id = DBT_INCREMENTAL_TARGET.event_id
+  and incoming_rows.event_time = DBT_INCREMENTAL_TARGET.event_time;
 
-select event_id, event_time, updated_at, payload
-from {{ source('raw', 'events') }}
+insert into target_table (event_id, event_time)
+(select event_id, event_time from incoming_rows);
+COMMIT
 ```
+
+Including an immutable timestamp in the `unique_key` option enables efficient filter pushdown and row-group
+pruning if the data is somewhat sorted by that timestamp.
+Check out DuckDB's [zonemap documentation](https://duckdb.org/docs/stable/guides/performance/indexing#zonemaps)
+and [this blog post](https://duckdb.org/2025/05/14/sorting-for-fast-selective-queries) for more information.
+You can inspect the query profiles with [`EXPLAIN ANALYZE`](https://motherduck.com/docs/sql-reference/motherduck-sql-reference/explain-analyze/) to confirm that your incremental models are efficiently pruning row-groups.
+
+### append
+
+Inserts incoming rows without checking existing keys; `unique_key` is ignored.
+
+```sql
+insert into target_table (event_id)
+(select event_id from incoming_rows);
+```
+
+### merge
+
+Updates matching `unique_key` values and inserts new ones. Without a key, the
+default merge appends. `incremental_predicates` can restrict the target match.
+
+TODO: rewrite this horrible paragraph as a table explaining each option
+Standard options `merge_update_columns` and `merge_exclude_columns` stay at the
+config root. Custom options belong under `meta`: `merge_update_condition`,
+`merge_insert_condition`, `merge_on_using_columns`, `merge_update_set_expressions`,
+`merge_clauses`, and `merge_returning_columns`.
+
+```sql
+merge into target_table as DBT_INTERNAL_DEST
+using incoming_rows as DBT_INTERNAL_SOURCE
+on DBT_INTERNAL_SOURCE.event_id = DBT_INTERNAL_DEST.event_id
+when matched then update by name
+when not matched then insert by name;
+```
+
+TODO: example for this
+Use `DBT_INTERNAL_SOURCE` and `DBT_INTERNAL_DEST` in custom merge conditions.
 
 DuckLake rejects `merge_returning_columns` and allows only one `UPDATE` or `DELETE` action across custom merge clauses.
 
-## Microbatch
+### microbatch
 
+Replaces each event-time window using delete and insert. Requires `event_time`,
+`batch_size`, and `begin`. See [the official dbt docs on microbatching](https://docs.getdbt.com/docs/build/incremental-microbatch).
+
+- `incremental_predicates` adds filters to the target delete.
+- TODO: explain concurrent batches, don't mention ducklake here
+
+TODO: include incremental predicated in the example
 ```sql
 {{ config(
     materialized='incremental',
@@ -74,21 +88,26 @@ DuckLake rejects `merge_returning_columns` and allows only one `UPDATE` or `DELE
     event_time='event_time',
     batch_size='day',
     begin='2025-01-01',
-    concurrent_batches=false
 ) }}
 
-select event_id, event_time, payload
+select event_id, event_time
 from {{ source('raw', 'events') }}
 ```
 
-Configure `event_time` on upstream sources or models too, so dbt can filter their inputs for each batch. Target configuration alone does not filter raw SQL inputs. dbt manages `lookback` and CLI event-time bounds; see [microbatch configuration](https://docs.getdbt.com/docs/build/incremental-microbatch).
+For a daily batch:
 
-Native MotherDuck databases support concurrent batches. Use at least three dbt threads to overlap batches of a single model, since one worker coordinates it. For DuckLake, set `concurrent_batches=false`: concurrent batches can conflict on inlined data even when their time windows do not overlap. The adapter does not automatically disable concurrency or retry those transactions.
+```sql
+delete from target_table
+where event_time >= '2025-01-01' and event_time < '2025-01-02';
+
+insert into target_table (event_id, event_time)
+select event_id, event_time from incoming_rows
+where event_time >= '2025-01-01' and event_time < '2025-01-02';
+```
 
 ## Staging tables
 
-TODO: synthetize this a lot, just 1 sentence explaning what they are and how to configure then. Another short sentence mentoning that canceled runs try to cleanup, but can leave some behind and suggest people to cleanup those schemas while no other dbt invocation is running
-
-Incremental models and snapshots use regular staging tables in the target database's `dbt_temp` schema. Set `meta={'temp_schema_name': 'custom_staging'}` to choose another schema. The token needs permission to create the schema and create and drop its tables.
-
-The adapter cleans up staging tables after successful builds and ordinary failures. Cancellation or an interrupted process can leave them behind. Avoid separate dbt invocations writing the same target table concurrently.
+Incremental models and snapshots create staging tables in `dbt_temp`. You can change the
+staging schema with `meta={'temp_schema_name': 'custom_staging'}`. Normal runs will try to
+cleanup after them, but some canceled or aborted runs might leave leftover tables in your
+schema. If they accumulate, it's a good idea to clean them up regularly.
