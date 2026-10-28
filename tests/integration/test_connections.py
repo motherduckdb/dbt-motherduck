@@ -23,11 +23,7 @@ from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
-def test_profile_and_connection(connection_adapter, test_database, admin_connection):
-    assert admin_connection.execute(
-        # sanity check
-        "select current_setting('motherduck_attach_mode')"
-    ).fetchone() == ("single",)
+def test_profile_and_connection(connection_adapter, test_database):
     assert isinstance(connection_adapter, MotherDuckAdapter)
     assert connection_adapter.config.threads == 2
     credentials = connection_adapter.config.credentials
@@ -45,10 +41,10 @@ def test_profile_and_connection(connection_adapter, test_database, admin_connect
         parameters = handle.info.get_parameters()
         assert handle.info.host == credentials.host
         assert handle.info.port == credentials.port
-        assert handle.info.user == credentials.user
+        assert handle.info.user == "postgres"
         assert handle.info.dbname == credentials.database
         assert parameters["sslmode"] == "verify-full"
-        assert parameters["sslrootcert"] == credentials.sslrootcert
+        assert parameters["sslrootcert"] == credentials.resolved_sslrootcert
         assert parameters["connect_timeout"] == str(credentials.connect_timeout)
         connection_adapter.connections.open(connection)
         assert connection.handle is handle

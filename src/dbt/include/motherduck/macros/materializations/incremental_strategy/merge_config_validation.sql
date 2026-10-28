@@ -9,8 +9,7 @@
     'merge_on_using_columns': 'sequence',
     'merge_update_columns': 'sequence',
     'merge_update_set_expressions': 'mapping',
-    'merge_exclude_columns': 'sequence',
-    'merge_returning_columns': 'sequence'
+    'merge_exclude_columns': 'sequence'
   } -%}
 
   {%- for field_name, field_type in base_configuration_fields.items() -%}
@@ -59,7 +58,7 @@
 
       {%- set conflicting_configs = [] -%}
       {%- for config_name, config_type in base_configuration_fields.items() -%}
-        {%- if config_name not in ['merge_on_using_columns', 'merge_returning_columns'] -%}
+        {%- if config_name != 'merge_on_using_columns' -%}
           {%- set config_value = config.get(config_name) -%}
           {%- if config_value is not none -%}
             {%- if config_type == 'sequence' -%}
@@ -101,10 +100,6 @@
 {%- macro validate_ducklake_restrictions(config, target_relation, errors) -%}
   {%- if not target_relation or not adapter.is_ducklake(target_relation) -%}
     {%- do return(none) -%}
-  {%- endif -%}
-
-  {%- if config.get('merge_returning_columns') -%}
-    {%- do errors.append("DuckLake MERGE restrictions: merge_returning_columns is not supported because DuckLake does not support RETURNING.") -%}
   {%- endif -%}
 
   {%- set unsupported_clauses = ['update', 'delete'] -%}

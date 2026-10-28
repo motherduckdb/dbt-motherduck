@@ -17,8 +17,7 @@ class MotherDuckCredentials(Credentials):
     # Overrides the Auth0 application that `externalbrowser` logs in through.
     oauth_client_id: str | None = None
     port: int = 5432
-    user: str = "postgres"
-    sslrootcert: str = field(default_factory=certifi.where)
+    sslrootcert: str = "certifi"
     connect_timeout: int = 240
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
@@ -42,7 +41,7 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError(
                 "oauth_client_id is only used when authenticator is 'externalbrowser'"
             )
-        names = ("host", "database", "schema", "user", "sslrootcert")
+        names = ("host", "database", "schema", "sslrootcert")
         if self.authenticator == "token":
             names = ("token", *names)
         if self.oauth_client_id is not None:
@@ -87,6 +86,10 @@ class MotherDuckCredentials(Credentials):
             )
 
     @property
+    def resolved_sslrootcert(self):
+        return certifi.where() if self.sslrootcert == "certifi" else self.sslrootcert
+
+    @property
     def type(self):
         return "motherduck"
 
@@ -100,7 +103,6 @@ class MotherDuckCredentials(Credentials):
             "authenticator",
             "oauth_client_id",
             "port",
-            "user",
             "database",
             "schema",
             "sslrootcert",

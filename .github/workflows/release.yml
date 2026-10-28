@@ -1,0 +1,269 @@
+name: Release
+run-name: Release ${{ inputs.version }} from ${{ inputs.branch }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Cutting a release: pick a branch and give it a version. The changie entries are
+# batched into the changelog and committed to the branch, the package is built
+# from that commit and published to PyPI, and the GitHub release creates the
+# tag. hatch-vcs reads the package version from the tag, so the build tags the
+# commit locally first, and nothing is tagged on GitHub until PyPI has the package.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to release from
+        type: string
+        default: main
+      version:
+        description: Package version, e.g. 0.2.0, or 0.2.0a1 for a prerelease
+        type: string
+        required: true
+      dry_run:
+        description: "Dry run: don't commit or publish, just prepare the changelog and build."
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      is-prerelease: ${{ steps.version.outputs.is-prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+      - name: Require a branch
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: git ls-remote --exit-code --heads origin "$BRANCH"
+      # The release runs no tests of its own, so the code being released must
+      # already be green. The changelog commit this workflow pushes doesn't
+      # trigger CI, so a rerun checks the commit it was made on instead. Release
+      # runs are skipped since they attach to the same commit, including this one.
+      - name: Require green checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          if [[ "$(git log -1 --format=%s HEAD)" == "Prepare release $VERSION" ]]; then
+            sha=$(git rev-parse HEAD^)
+          fi
+          # The latest run of each workflow, so a manual rerun can replace a flaky one.
+          runs=$(gh api --paginate "repos/$GH_REPO/actions/runs?head_sha=$sha" \
+            --jq '.workflow_runs[] | select(.path != ".github/workflows/release.yml")' \
+            | jq -s 'group_by(.path) | map(max_by(.created_at))')
+          jq -r '.[] | "\(.name) (\(.event)): \(.conclusion // .status) \(.html_url)"' <<< "$runs"
+          if [[ $(jq length <<< "$runs") == 0 ]]; then
+            echo "::error::No checks ran on $sha."
+            exit 1
+          fi
+          if jq -e 'any(.[]; .conclusion != "success")' <<< "$runs" > /dev/null; then
+            echo "::error::Not all checks on $sha are green."
+            exit 1
+          fi
+      # Only canonical PEP 440 versions that changie can name release notes after.
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$VERSION" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))((a|b|rc)(0|[1-9][0-9]*))?$ ]]; then
+            base="${BASH_REMATCH[1]}"
+            prerelease="${BASH_REMATCH[5]}"
+          else
+            echo "::error::Invalid version '$VERSION', expected e.g. 0.2.0 or 0.2.0a1."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null; then
+            echo "::error::Tag $VERSION already exists."
+            exit 1
+          fi
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          if [[ -n "$prerelease" ]]; then
+            echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}-${prerelease}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}.md" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check for existing release notes and staged prerelease entries
+        id: changes
+        shell: bash
+        env:
+          BASE: ${{ steps.version.outputs.base }}
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: |
+          [[ -f "$RELEASE_NOTES" ]] && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+          [[ -d ".changes/$BASE" ]] && echo "staged=true" >> "$GITHUB_OUTPUT" || echo "staged=false" >> "$GITHUB_OUTPUT"
+      - name: Batch prerelease changelog entries
+        if: >-
+          steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --move-dir ${{ steps.version.outputs.base }}
+            --prerelease ${{ steps.version.outputs.prerelease }}
+      - name: Batch final changelog entries after prereleases
+        if: >-
+          steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --include ${{ steps.version.outputs.base }}
+            --remove-prereleases
+      - name: Batch final changelog entries
+        if: >-
+          steps.changes.outputs.exists == 'false'
+          && steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'false'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: batch ${{ steps.version.outputs.base }}
+      - name: Merge changelog
+        if: steps.changes.outputs.exists == 'false'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: merge
+      - name: Show release notes
+        env:
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: cat "$RELEASE_NOTES" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: ${{ steps.version.outputs.release-notes }}
+          if-no-files-found: error
+          retention-days: 1
+      # A rerun after a failed publish finds the changelog already committed and
+      # releases the same commit. A dry run builds the branch as it is, since the
+      # changelog commit is never pushed.
+      - name: Commit changelog
+        id: commit
+        env:
+          BRANCH: ${{ inputs.branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .changes CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "::notice::Changelog is already prepared for $VERSION."
+          elif [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run: not committing the changelog for $VERSION."
+          else
+            git commit -m "Prepare release $VERSION"
+            git push origin "HEAD:$BRANCH"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          # hatch-vcs derives the package version from the tags in the history.
+          fetch-depth: 0
+      - name: Tag release commit locally
+        run: git tag "$VERSION"
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      - name: Install project
+        run: uv sync --locked --no-default-groups
+      - name: Build distributions
+        run: uv build
+      - name: Check distributions
+        run: uvx --from "twine>=7,<8" twine check dist/*
+      - name: Check package version
+        run: |
+          built=$(uv run --no-sync python -c 'import importlib.metadata; print(importlib.metadata.version("dbt-motherduck"))')
+          if [[ "$built" != "$VERSION" ]]; then
+            echo "::error::Built $built instead of $VERSION."
+            exit 1
+          fi
+      - name: Upload distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: https://pypi.org/project/dbt-motherduck/${{ inputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: distributions
+          path: dist/
+      # Lets a rerun get past this step when only the GitHub release failed.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  github-release:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: distributions
+          path: dist/
+      - name: Download release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-notes
+          path: notes/
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          PRERELEASE: ${{ needs.prepare.outputs.is-prerelease == 'true' && '--prerelease' || '' }}
+        run: |
+          gh release create "$VERSION" dist/* $PRERELEASE \
+            --notes-file notes/*.md \
+            --target "$SHA" \
+            --title "$VERSION"

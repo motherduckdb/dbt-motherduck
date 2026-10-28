@@ -10,10 +10,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # A shallow checkout has no tags for hatch-vcs to derive the version from, and
+  # dbt --version fails on its fallback. CI doesn't need the real version.
+  SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Superseded pull request runs no longer need to finish. Keep main and manual
-  # runs alive because cancellation can skip integration database teardown.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -27,10 +30,10 @@ jobs:
       package: ${{ steps.paths.outputs.package }}
       tests: ${{ steps.paths.outputs.tests }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check changed paths
         id: paths
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         with:
           filters: |
             package:
@@ -64,8 +67,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
       - name: Install lint dependencies
@@ -85,8 +88,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -105,41 +108,61 @@ jobs:
 
   integration:
     name: integration (${{ matrix.database-type }})
-    needs: [changes, unit]
+    needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
-    # The native leg measured 1h20m against the live endpoint; leave headroom.
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      # Both legs share one duckling, and the end-of-run sweep of DuckLake databases
-      # can abort it (see the workaround in tests/conftest.py), so run one at a time.
-      max-parallel: 1
       matrix:
         database-type: [native, ducklake]
     env:
       DBT_ENV_SECRET_MOTHERDUCK_TOKEN: ${{ secrets.DBT_ENV_SECRET_MOTHERDUCK_TOKEN }}
-      MOTHERDUCK_INITIAL_DATABASE: ${{ vars.MOTHERDUCK_INITIAL_DATABASE }}
       # Names the disposable databases. Includes the matrix leg because both legs
       # of a run share a run number.
       MOTHERDUCK_TEST_RUN_ID: >-
         ${{ github.ref_name }}-${{ github.run_number }}-${{ github.run_attempt }}-${{ matrix.database-type }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
-      # The fixtures skip when the token is unset; in CI that must fail loudly instead.
-      - name: Require endpoint credentials
-        run: |
-          [ -n "$DBT_ENV_SECRET_MOTHERDUCK_TOKEN" ] \
-            || { echo "::error::secret DBT_ENV_SECRET_MOTHERDUCK_TOKEN is not set"; exit 1; }
-          [ -n "$MOTHERDUCK_INITIAL_DATABASE" ] \
-            || { echo "::error::variable MOTHERDUCK_INITIAL_DATABASE is not set"; exit 1; }
       - name: Install project and test dependencies
         run: uv sync --locked --no-editable
       - name: Report versions
         run: uv run --no-sync dbt --version
       - name: Run integration tests
         run: uv run --no-sync pytest -m integration -ra -n 8 --database-type ${{ matrix.database-type }}
+
+  summary:
+    name: CI summary
+    if: always()
+    needs: [changes, changelog, lint, unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI results
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGELOG_RESULT: ${{ needs.changelog.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          TESTS_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.tests == 'true' }}
+          CHANGELOG_REQUIRED: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip:changelog-check') }}
+        run: |
+          check_job() {
+            local job="$1" result="$2" required="$3"
+            echo "$job: $result"
+            if [[ "$result" != "success" && ( "$result" != "skipped" || "$required" != "false" ) ]]; then
+              echo "::error::$job did not complete successfully"
+              exit 1
+            fi
+          }
+
+          check_job changes "$CHANGES_RESULT" true
+          check_job changelog "$CHANGELOG_RESULT" "$CHANGELOG_REQUIRED"
+          check_job lint "$LINT_RESULT" "$TESTS_REQUIRED"
+          check_job unit "$UNIT_RESULT" "$TESTS_REQUIRED"
+          check_job integration "$INTEGRATION_RESULT" "$TESTS_REQUIRED"

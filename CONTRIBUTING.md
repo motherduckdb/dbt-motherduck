@@ -15,12 +15,12 @@ uv run ruff format --check .
 uv run ruff check .
 ```
 
-To run all tests, configure the MotherDuck endpoint used for disposable test
-databases:
+The unit tests need no database: `uv run pytest -m unit`. The integration and
+ecosystem tests fail without endpoint credentials. To run all tests, configure the
+MotherDuck endpoint used for disposable test databases:
 
 ```shell
 export DBT_ENV_SECRET_MOTHERDUCK_TOKEN="<a MotherDuck token>"
-export MOTHERDUCK_INITIAL_DATABASE="<the database containing the test duckling>"
 export MOTHERDUCK_TEST_RUN_ID="$(whoami)-local-$(date +%s)"
 uv run pytest
 ```
