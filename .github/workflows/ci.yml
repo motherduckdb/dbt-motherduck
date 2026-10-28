@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # A shallow checkout has no tags for hatch-vcs to derive the version from, and
+  # dbt --version fails on its fallback. CI doesn't need the real version.
+  SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

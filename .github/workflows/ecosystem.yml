@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # A shallow checkout has no tags for hatch-vcs to derive the version from, and
+  # dbt --version fails on its fallback. CI doesn't need the real version.
+  SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
+
 concurrency:
   # Separate from CI so a pull request run neither cancels this job nor is
   # cancelled by it. Not cancel-in-progress: a killed run skips the fixture

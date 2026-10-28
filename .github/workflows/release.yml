@@ -1,99 +1,67 @@
-name: Publish
-run-name: Publish ${{ inputs.branch }} to ${{ inputs.deploy-to }} PyPI as ${{ inputs.version || 'current version' }}
+name: Release
+run-name: Release ${{ inputs.version }} from ${{ inputs.branch }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
+# Cutting a release: pick a branch and give it a version. The changie entries are
+# batched into the changelog and committed to the branch, the package is built
+# from that commit and published to PyPI, and the GitHub release creates the
+# tag. hatch-vcs reads the package version from the tag, so the build tags the
+# commit locally first, and nothing is tagged on GitHub until PyPI has the package.
 on:
   workflow_dispatch:
     inputs:
-      deploy-to:
-        description: PyPI repository to publish to
-        type: choice
-        options:
-          - test
-          - prod
       branch:
-        description: Branch or tag to publish
+        description: Branch to release from
         type: string
         default: main
       version:
-        description: Target production version (for example, 0.1.0a1); omit for TestPyPI
+        description: Package version, e.g. 0.2.0, or 0.2.0a1 for a prerelease
         type: string
-        default: ""
+        required: true
+      dry_run:
+        description: Prepare the changelog and build, but push and publish nothing
+        type: boolean
+        default: false
 
 concurrency:
-  group: publish-${{ inputs.deploy-to }}
+  group: release
   cancel-in-progress: false
 
 permissions:
   contents: read
 
+env:
+  VERSION: ${{ inputs.version }}
+
 jobs:
-  changelog:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
-      ref: ${{ steps.ref.outputs.ref }}
-      release-notes: ${{ steps.version.outputs.release-notes }}
+      sha: ${{ steps.commit.outputs.sha }}
+      is-prerelease: ${{ steps.version.outputs.is-prerelease }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.branch }}
-      - name: Require a branch for production publishing
-        if: inputs.deploy-to == 'prod'
+      - name: Require a branch
         env:
           BRANCH: ${{ inputs.branch }}
         run: git ls-remote --exit-code --heads origin "$BRANCH"
-      - uses: astral-sh/setup-uv@v10
-        if: inputs.deploy-to == 'prod'
-        with:
-          enable-cache: true
-          python-version: "3.10"
-      - name: Set package version
-        id: package
-        shell: bash
-        env:
-          DEPLOY_TO: ${{ inputs.deploy-to }}
-          TARGET_VERSION: ${{ inputs.version }}
-        run: |
-          initial=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          echo "initial=$initial" >> "$GITHUB_OUTPUT"
-
-          if [[ "$DEPLOY_TO" == "prod" ]]; then
-            if [[ -z "$TARGET_VERSION" ]]; then
-              echo "::error::A target version is required for production publishing."
-              exit 1
-            fi
-            if [[ "$initial" != "$TARGET_VERSION" ]]; then
-              uvx --from "hatch>=1.14,<2" hatch version "$TARGET_VERSION"
-            fi
-            uv lock
-          elif [[ -n "$TARGET_VERSION" ]]; then
-            echo "::warning::The version input is ignored for TestPyPI; publishing $initial."
-          fi
-
-          final=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          if [[ "$DEPLOY_TO" == "prod" && "$final" != "$TARGET_VERSION" ]]; then
-            echo "::error::Hatch normalized $TARGET_VERSION to $final; provide the canonical PEP 440 version."
-            exit 1
-          fi
-          echo "final=$final" >> "$GITHUB_OUTPUT"
-      - name: Get changelog version
+      # Only canonical PEP 440 versions that changie can name release notes after.
+      - name: Validate version
         id: version
         shell: bash
-        env:
-          VERSION: ${{ steps.package.outputs.final }}
         run: |
-          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+          if [[ "$VERSION" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))((a|b|rc)(0|[1-9][0-9]*))?$ ]]; then
             base="${BASH_REMATCH[1]}"
-            prerelease="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
-          elif [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
-            base="${BASH_REMATCH[1]}"
-            prerelease="dev${BASH_REMATCH[2]}"
-          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            base="$VERSION"
-            prerelease=""
+            prerelease="${BASH_REMATCH[5]}"
           else
-            echo "::error::Unsupported package version for changelog generation: $VERSION"
+            echo "::error::Invalid version '$VERSION', expected e.g. 0.2.0 or 0.2.0a1."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::Tag v$VERSION already exists."
             exit 1
           fi
 
@@ -117,8 +85,7 @@ jobs:
           [[ -d ".changes/$BASE" ]] && echo "staged=true" >> "$GITHUB_OUTPUT" || echo "staged=false" >> "$GITHUB_OUTPUT"
       - name: Batch prerelease changelog entries
         if: >-
-          inputs.deploy-to == 'prod'
-          && steps.changes.outputs.exists == 'false'
+          steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'true'
         uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
         with:
@@ -129,8 +96,7 @@ jobs:
             --prerelease ${{ steps.version.outputs.prerelease }}
       - name: Batch final changelog entries after prereleases
         if: >-
-          inputs.deploy-to == 'prod'
-          && steps.changes.outputs.exists == 'false'
+          steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'false'
           && steps.changes.outputs.staged == 'true'
         uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
@@ -142,8 +108,7 @@ jobs:
             --remove-prereleases
       - name: Batch final changelog entries
         if: >-
-          inputs.deploy-to == 'prod'
-          && steps.changes.outputs.exists == 'false'
+          steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'false'
           && steps.changes.outputs.staged == 'false'
         uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
@@ -151,39 +116,55 @@ jobs:
           version: v1.26.0
           args: batch ${{ steps.version.outputs.base }}
       - name: Merge changelog
-        if: inputs.deploy-to == 'prod' && steps.changes.outputs.exists == 'false'
+        if: steps.changes.outputs.exists == 'false'
         uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
         with:
           version: v1.26.0
           args: merge
-      - name: Commit release preparation
-        if: inputs.deploy-to == 'prod'
+      - name: Show release notes
+        env:
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: cat "$RELEASE_NOTES" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ steps.version.outputs.release-notes }}
+          if-no-files-found: error
+          retention-days: 1
+      # A rerun after a failed publish finds the changelog already committed and
+      # releases the same commit. A dry run builds the branch as it is, since the
+      # changelog commit is never pushed.
+      - name: Commit changelog
+        id: commit
         env:
           BRANCH: ${{ inputs.branch }}
-          VERSION: ${{ steps.package.outputs.final }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml uv.lock .changes CHANGELOG.md
+          git add .changes CHANGELOG.md
           if git diff --cached --quiet; then
-            echo "::notice::Version and changelog are already prepared for $VERSION."
+            echo "::notice::Changelog is already prepared for $VERSION."
+          elif [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run: not committing the changelog for $VERSION."
           else
             git commit -m "Prepare release $VERSION"
             git push origin "HEAD:$BRANCH"
           fi
-      - name: Record release commit
-        id: ref
-        run: echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: changelog
+    needs: prepare
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.package.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.changelog.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
+          # hatch-vcs derives the package version from the tags in the history.
+          fetch-depth: 0
+      - name: Tag release commit locally
+        run: git tag "v$VERSION"
       - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
@@ -196,9 +177,13 @@ jobs:
         run: uv build
       - name: Check distributions
         run: uvx --from "twine>=7,<8" twine check dist/*
-      - name: Get package version
-        id: package
-        run: echo "version=$(uv run --no-sync python -c 'import importlib.metadata; print(importlib.metadata.version(\"dbt-motherduck\"))')" >> "$GITHUB_OUTPUT"
+      - name: Check package version
+        run: |
+          built=$(uv run --no-sync python -c 'import importlib.metadata; print(importlib.metadata.version("dbt-motherduck"))')
+          if [[ "$built" != "$VERSION" ]]; then
+            echo "::error::Built $built instead of $VERSION."
+            exit 1
+          fi
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -209,13 +194,11 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     environment:
-      name: ${{ inputs.deploy-to }}
-      url: >-
-        ${{ inputs.deploy-to == 'prod'
-          && 'https://pypi.org/project/dbt-motherduck/'
-          || 'https://test.pypi.org/project/dbt-motherduck/' }}
+      name: prod
+      url: https://pypi.org/project/dbt-motherduck/${{ inputs.version }}/
     permissions:
       contents: read
       id-token: write
@@ -225,38 +208,37 @@ jobs:
         with:
           name: distributions
           path: dist/
+      # Lets a rerun get past this step when only the GitHub release failed.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.2
         with:
-          repository-url: >-
-            ${{ inputs.deploy-to == 'prod'
-              && 'https://upload.pypi.org/legacy/'
-              || 'https://test.pypi.org/legacy/' }}
           packages-dir: dist/
+          skip-existing: true
 
   github-release:
-    if: inputs.deploy-to == 'prod'
-    needs: [changelog, build, publish]
+    needs: [prepare, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.changelog.outputs.ref }}
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
           name: distributions
           path: dist/
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes/
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.build.outputs.version }}
-          RELEASE_NOTES: ${{ needs.changelog.outputs.release-notes }}
-          TARGET: ${{ needs.changelog.outputs.ref }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          PRERELEASE: ${{ needs.prepare.outputs.is-prerelease == 'true' && '--prerelease' || '' }}
         run: |
-          gh release create "v${VERSION}" dist/* \
-            --notes-file "$RELEASE_NOTES" \
-            --target "$TARGET" \
-            --title "v${VERSION}"
+          gh release create "v$VERSION" dist/* $PRERELEASE \
+            --notes-file notes/*.md \
+            --target "$SHA" \
+            --title "v$VERSION"
