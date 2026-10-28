@@ -26,7 +26,9 @@ so it will reject the legacy way of setting configurations at parse time.
 
 ## DuckDB settings
 
-In `dbt-motherduck` each worker thread reuses its own MotherDuck connection across models, so settings apply at the worker-level. On `dbt-duckdb` they would affect all workers. To configure settings globally use the profile `settings` dictionary.
+In `dbt-motherduck` each worker thread reuses its own MotherDuck connection across models,
+so settings apply at the worker-level. On `dbt-duckdb` they would affect all workers. To
+configure settings globally use the profile `settings` dictionary.
 
 See the [Settings](connection.md#settings) documentation of this adapter for more info.
 
@@ -72,8 +74,8 @@ columns:
 
 ## Attach mode
 
-Connections use MotherDuck's [`single` attachment mode](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/attach-modes/), while `dbt-duckdb` defaults to workspace mode.
-If your project includes SQL statements that reference databases that are not tracked by dbt,
+Connections use MotherDuck's [`single` attachment mode](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/attach-modes/),
+while `dbt-duckdb` defaults to workspace mode. If your project includes SQL statements that reference databases that are not tracked by dbt,
 you will need to declare those in your profile configuration.
 
 ```yaml
