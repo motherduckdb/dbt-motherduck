@@ -41,7 +41,7 @@ jobs:
       sha: ${{ steps.commit.outputs.sha }}
       is-prerelease: ${{ steps.version.outputs.is-prerelease }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.branch }}
       - name: Require a branch
@@ -87,7 +87,7 @@ jobs:
         if: >-
           steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'true'
-        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
         with:
           version: v1.26.0
           args: >-
@@ -99,7 +99,7 @@ jobs:
           steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'false'
           && steps.changes.outputs.staged == 'true'
-        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
         with:
           version: v1.26.0
           args: >-
@@ -111,13 +111,13 @@ jobs:
           steps.changes.outputs.exists == 'false'
           && steps.version.outputs.is-prerelease == 'false'
           && steps.changes.outputs.staged == 'false'
-        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
         with:
           version: v1.26.0
           args: batch ${{ steps.version.outputs.base }}
       - name: Merge changelog
         if: steps.changes.outputs.exists == 'false'
-        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
         with:
           version: v1.26.0
           args: merge
@@ -126,7 +126,7 @@ jobs:
           RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
         run: cat "$RELEASE_NOTES" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload release notes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-notes
           path: ${{ steps.version.outputs.release-notes }}
@@ -158,14 +158,14 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           # hatch-vcs derives the package version from the tags in the history.
           fetch-depth: 0
       - name: Tag release commit locally
         run: git tag "$VERSION"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -185,7 +185,7 @@ jobs:
             exit 1
           fi
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: distributions
           path: dist/
@@ -204,13 +204,13 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: distributions
           path: dist/
       # Lets a rerun get past this step when only the GitHub release failed.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
           skip-existing: true
@@ -222,12 +222,12 @@ jobs:
       contents: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: distributions
           path: dist/
       - name: Download release notes
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-notes
           path: notes/
