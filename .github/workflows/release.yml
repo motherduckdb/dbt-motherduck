@@ -36,6 +36,7 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
@@ -48,6 +49,32 @@ jobs:
         env:
           BRANCH: ${{ inputs.branch }}
         run: git ls-remote --exit-code --heads origin "$BRANCH"
+      # The release runs no tests of its own, so the code being released must
+      # already be green. The changelog commit this workflow pushes doesn't
+      # trigger CI, so a rerun checks the commit it was made on instead. Release
+      # runs are skipped since they attach to the same commit, including this one.
+      - name: Require green checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          if [[ "$(git log -1 --format=%s HEAD)" == "Prepare release $VERSION" ]]; then
+            sha=$(git rev-parse HEAD^)
+          fi
+          # The latest run of each workflow, so a manual rerun can replace a flaky one.
+          runs=$(gh api --paginate "repos/$GH_REPO/actions/runs?head_sha=$sha" \
+            --jq '.workflow_runs[] | select(.path != ".github/workflows/release.yml")' \
+            | jq -s 'group_by(.path) | map(max_by(.created_at))')
+          jq -r '.[] | "\(.name) (\(.event)): \(.conclusion // .status) \(.html_url)"' <<< "$runs"
+          if [[ $(jq length <<< "$runs") == 0 ]]; then
+            echo "::error::No checks ran on $sha."
+            exit 1
+          fi
+          if jq -e 'any(.[]; .conclusion != "success")' <<< "$runs" > /dev/null; then
+            echo "::error::Not all checks on $sha are green."
+            exit 1
+          fi
       # Only canonical PEP 440 versions that changie can name release notes after.
       - name: Validate version
         id: version
@@ -169,10 +196,8 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.10"
-      - name: Install project and test dependencies
-        run: uv sync --locked
-      - name: Run unit tests
-        run: uv run --no-sync pytest -m unit
+      - name: Install project
+        run: uv sync --locked --no-default-groups
       - name: Build distributions
         run: uv build
       - name: Check distributions
