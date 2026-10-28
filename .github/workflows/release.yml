@@ -60,8 +60,8 @@ jobs:
             echo "::error::Invalid version '$VERSION', expected e.g. 0.2.0 or 0.2.0a1."
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-            echo "::error::Tag v$VERSION already exists."
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null; then
+            echo "::error::Tag $VERSION already exists."
             exit 1
           fi
 
@@ -164,7 +164,7 @@ jobs:
           # hatch-vcs derives the package version from the tags in the history.
           fetch-depth: 0
       - name: Tag release commit locally
-        run: git tag "v$VERSION"
+        run: git tag "$VERSION"
       - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
@@ -238,7 +238,7 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
           PRERELEASE: ${{ needs.prepare.outputs.is-prerelease == 'true' && '--prerelease' || '' }}
         run: |
-          gh release create "v$VERSION" dist/* $PRERELEASE \
+          gh release create "$VERSION" dist/* $PRERELEASE \
             --notes-file notes/*.md \
             --target "$SHA" \
-            --title "v$VERSION"
+            --title "$VERSION"
