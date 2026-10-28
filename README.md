@@ -1,98 +1,41 @@
 # dbt-motherduck
 
+[MotherDuck](https://motherduck.com/) is a Cloud Data Warehouse that uses [DuckDB](https://duckdb.org/) as it's compute engine.
+
+[dbt](http://getdbt.com) is a framework to engineer data transformation pipelines. This project, `dbt-motherduck`, is an adapter to run dbt v1 with MotherDuck.
+
+This dbt v1 adapter allows you to run dbt v1 projects in MotherDuck. The [DuckDB Adapter](https://github.com/duckdb/dbt-duckdb) also supports running queries against MotherDuck,
+but each adapter supports MotherDuck in different ways.
+`dbt-motherduck` leverages MotherDuck's [Postgres Endpoint](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/postgres-endpoint/) and executes queries via Postgres connections,
+while `dbt-duckdb` spawns a DuckDB process that loads the MotherDuck DuckDB extension.
+A dbt project built using `dbt-duckdb` should work with `dbt-motherduck` with very few changes (documented [here](docs/coming-from-dbt-duckdb.md)), and execute similar SQL statements against MotherDuck.
+
+To get started, install `dbt-motherduck` from PyPI and add your MotherDuck credentials on `profiles.yml`. E.g.:
+
 ```yaml
 dwh:
   target: dev
   outputs:
     dev:
       type: motherduck
-      host: "pg.us-east-1-aws.motherduck.com"
-      database:
-      schema:
+      host: "pg.us-east-1-aws.motherduck.com" # needs to match the region of your MotherDuck organization
+      database: # target database
+      schema: # default target schema
       token: "{{ env_var('DBT_ENV_SECRET_MOTHERDUCK_TOKEN') }}"
-      threads: 2
+      threads: 4
+      settings:
+        preserve_insertion_order: false
+        TimeZone: Europe/Amsterdam
 ```
 
+## Documentation
 
-## breaking changes
+- [Connection](docs/connection.md): profiles, single attach mode, database discovery, and settings.
+- [Incremental models](docs/incremental-models.md): strategies and timestamp-based pruning.
+- [DuckLake](docs/ducklake.md): partitioning, sort order, and supported options.
+- [Reading and writing external files](docs/external-files.md): remote sources and exports.
+- [Python models](docs/python-models.md): current support and upcoming MotherDuck Flights integration.
+- [Coming from dbt-duckdb](docs/coming-from-dbt-duckdb.md): overview of the few caveats that might impact you if you are migrating a project from `dbt-duckdb`.
 
-### adapter-specific configs under config.meta
-
-for dbt v2 compat, errors at parse time
-
-### attach mode
-
-Connections use MotherDuck's `single` attachment mode. Each session attaches automatically
-the databases declared by enabled models, seeds, snapshots, functions, and database-backed
-sources in the parsed project, including deferred relations.
-
-For databases referenced only through raw SQL, hooks, or custom macros, add an
-additive list to the profile output:
-
-```yaml
-attach_databases:
-  - additional_database
-```
-
-
-### connection reuse
-
-Each worker thread reuses its MotherDuck PG endpoint connection across models for the duration of
-a dbt run.
-
-Macros that manage transactions should use `statement(auto_begin=True)` and
-`adapter.commit()` rather than raw transaction SQL. Mismatches between dbt's
-transaction flag and the driver raise an error and discard the session.
-
-on dbt-duckdb since there's only 1 connection you could use on-run-start hooks to `SET` duckdb options
-
-in dbt-motherduck each connection is independent, and the main connection that runs on-run-start hooks is not used by models
-
-so we support profile settings
-
-Use `settings` in the profile output to initialize every session, including setup,
-compilation, model workers, and replacement connections:
-
-```yaml
-settings:
-  preserve_insertion_order: false
-  TimeZone: Europe/Amsterdam
-```
-
-
-For a model-specific override, restore the profile value in a post-hook:
-
-```jinja
-{{ config(
-    pre_hook="SET preserve_insertion_order = true",
-    post_hook="SET preserve_insertion_order = " ~
-        (target.settings.get('preserve_insertion_order', true) | lower)
-) }}
-```
-
-
-### complex types in contracts
-
-Complex types on model contracts are now more strict, and it needs to match exactly how DuckDB prints the type.
-
-```yaml
-columns:
-  - name: payload
-    data_type: struct(a integer, b varchar) # real type, works
-    data_type: struct(b varchar, a integer) # passes on dbt-duckdb, fails on dbt-motherduck
-```
-
-Field names, types, and order must all match.
-
-
-## 2.0 limitations
-
-### nested schemas
-
-DuckDB 2.0's nested schemas, such as `database.schema_1.schema_2.table_1`, are not
-yet supported by the adapter. Schema values are treated as a single identifier,
-not a nested path. Use a single schema level for models, sources, snapshots, and
-staging tables.
-
-Future support requires namespace-aware relation rendering, parent-aware metadata
-discovery, schema/staging DDL, and foreign-key and index handling.
+For general dbt concepts, project configuration, and commands, see the [dbt documentation](https://docs.getdbt.com/docs/introduction).
+For MotherDuck SQL and platform features, see the [MotherDuck documentation](https://motherduck.com/docs/).
