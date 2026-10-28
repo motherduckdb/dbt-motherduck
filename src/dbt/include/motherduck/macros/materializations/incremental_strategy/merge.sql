@@ -29,7 +29,6 @@
     {%- set merge_update_columns = config.get('merge_update_columns') or [] -%}
     {%- set merge_exclude_columns = config.get('merge_exclude_columns') or [] -%}
     {%- set merge_update_set_expressions = config.get('merge_update_set_expressions', {}) -%}
-    {%- set merge_returning_columns = config.get('merge_returning_columns', []) -%}
 
     {%- set merge_clause_defaults = merge_clause_defaults(
         merge_update_condition,
@@ -147,9 +146,6 @@
         {%- endif %}
     {%- endfor %}
 
-    {%- if merge_returning_columns %}
-    RETURNING {{ merge_returning_columns if merge_returning_columns is string else merge_returning_columns | join(', ') }}
-    {%- endif %}
 {% endmacro %}
 
 {% macro motherduck__merge_join_clause(unique_key, merge_on_using_columns, incremental_predicates) -%}

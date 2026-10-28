@@ -11,14 +11,13 @@ class MotherDuckCredentials(Credentials):
     host: str
     token: str = field(repr=False)
     port: int = 5432
-    user: str = "postgres"
-    sslrootcert: str = field(default_factory=certifi.where)
+    sslrootcert: str = "certifi"
     connect_timeout: int = 240
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        for name in ("host", "token", "database", "schema", "user", "sslrootcert"):
+        for name in ("host", "token", "database", "schema", "sslrootcert"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
                 raise DbtRuntimeError(
@@ -58,6 +57,10 @@ class MotherDuckCredentials(Credentials):
             )
 
     @property
+    def resolved_sslrootcert(self):
+        return certifi.where() if self.sslrootcert == "certifi" else self.sslrootcert
+
+    @property
     def type(self):
         return "motherduck"
 
@@ -69,7 +72,6 @@ class MotherDuckCredentials(Credentials):
         return (
             "host",
             "port",
-            "user",
             "database",
             "schema",
             "sslrootcert",

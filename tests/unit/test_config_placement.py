@@ -39,7 +39,6 @@ def assert_placement_error(code, output, key):
             "merge_clauses",
             {"when_matched": [{"action": "update", "mode": "by_name"}]},
         ),
-        ("incremental", "merge_returning_columns", ["id"]),
         ("table", "partitioned_by", "id"),
         ("table", "partition_by", "id"),
         ("table", "sorted_by", "id"),
