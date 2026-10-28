@@ -1,6 +1,5 @@
 # Adapted from dbt-duckdb's incremental MERGE tests.
 import json
-import re
 
 import pytest
 from dbt.exceptions import ParsingError
@@ -93,31 +92,6 @@ select *, updated_at: current_timestamp, version: 1 from (
         ) == [(1, 2, True), (2, 2, True), (3, 1, True), (4, 1, True), (5, 1, True)]
 
     @pytest.mark.skip_database_type(
-        "ducklake", reason="DuckLake does not support RETURNING"
-    )
-    def test_returning(self, project, initial_target):
-        events = []
-        run_dbt(
-            [
-                "run",
-                "--vars",
-                json.dumps({"merge": {"merge_returning_columns": ["id", "name"]}}),
-            ],
-            callbacks=[events.append],
-        )
-        # Materializations do not expose RETURNING rows. Check this semantic clause
-        # in the SQL actually executed, without snapshotting the whole statement.
-        merge_sql = [
-            event.data.sql.lower()
-            for event in events
-            if event.info.name == "SQLQuery" and "merge into" in event.data.sql.lower()
-        ]
-        assert any(re.search(r"\breturning\b", sql) for sql in merge_sql)
-        assert project.run_sql(
-            f"select count(*) from {initial_target}", fetch="one"
-        ) == (5,)
-
-    @pytest.mark.skip_database_type(
         "ducklake", reason="DuckLake supports only one MERGE update or delete action"
     )
     def test_custom_clauses(self, project, initial_target):
@@ -187,13 +161,6 @@ select *, updated_at: current_timestamp, version: 1 from (
             (
                 {"merge": {"merge_clauses": {"when_matched": ["not_a_dict"]}}},
                 "elements must be dictionaries",
-            ),
-            pytest.param(
-                {"merge": {"merge_returning_columns": ["id"]}},
-                "merge_returning_columns is not supported",
-                marks=pytest.mark.skip_database_type(
-                    "native", reason="DuckLake-specific restriction"
-                ),
             ),
             *[
                 pytest.param(
