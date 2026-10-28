@@ -129,3 +129,35 @@ jobs:
         run: uv run --no-sync dbt --version
       - name: Run integration tests
         run: uv run --no-sync pytest -m integration -ra -n 8 --database-type ${{ matrix.database-type }}
+
+  summary:
+    name: CI summary
+    if: always()
+    needs: [changes, changelog, lint, unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI results
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGELOG_RESULT: ${{ needs.changelog.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          TESTS_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.tests == 'true' }}
+          CHANGELOG_REQUIRED: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip:changelog-check') }}
+        run: |
+          check_job() {
+            local job="$1" result="$2" required="$3"
+            echo "$job: $result"
+            if [[ "$result" != "success" && ( "$result" != "skipped" || "$required" != "false" ) ]]; then
+              echo "::error::$job did not complete successfully"
+              exit 1
+            fi
+          }
+
+          check_job changes "$CHANGES_RESULT" true
+          check_job changelog "$CHANGELOG_RESULT" "$CHANGELOG_REQUIRED"
+          check_job lint "$LINT_RESULT" "$TESTS_REQUIRED"
+          check_job unit "$UNIT_RESULT" "$TESTS_REQUIRED"
+          check_job integration "$INTEGRATION_RESULT" "$TESTS_REQUIRED"
