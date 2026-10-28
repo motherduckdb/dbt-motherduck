@@ -12,8 +12,6 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Superseded pull request runs no longer need to finish. Keep main and manual
-  # runs alive because cancellation can skip integration database teardown.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -108,7 +106,6 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
-    # The native leg measured 1h20m against the live endpoint; leave headroom.
     timeout-minutes: 120
     strategy:
       fail-fast: false
