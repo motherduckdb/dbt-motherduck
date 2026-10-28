@@ -1,3 +1,0 @@
-kind: Security
-body: Redact MotherDuck tokens from rollback failure tracebacks in JSON debug logs
-time: 2026-10-20T15:45:35Z
