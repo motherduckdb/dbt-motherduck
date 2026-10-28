@@ -158,6 +158,7 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
           PRERELEASE: ${{ needs.detect.outputs.is-prerelease == 'true' && '--prerelease' || '' }}
         run: |
+          # this also tags the release
           gh release create "$VERSION" dist/* $PRERELEASE \
             --notes-file notes/*.md \
             --target "$SHA" \
