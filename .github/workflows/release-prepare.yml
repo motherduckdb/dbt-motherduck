@@ -42,6 +42,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.branch }}
+          # Preparing a version again reads the commits that prepared it.
+          fetch-depth: 0
       - name: Require a branch
         env:
           BRANCH: ${{ inputs.branch }}
@@ -72,17 +74,28 @@ jobs:
             echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
             echo "release-notes=.changes/${base}.md" >> "$GITHUB_OUTPUT"
           fi
-      - name: Check for existing release notes and staged prerelease entries
+      # Preparing a version again, e.g. to pick up entries merged after it was
+      # prepared, undoes the changes to .changes of every commit that touched its
+      # release notes, newest first, and batches again. This also drops any edits
+      # made to the release notes by hand.
+      - name: Undo an earlier preparation of this version
+        env:
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: |
+          if [[ ! -f "$RELEASE_NOTES" ]]; then
+            exit 0
+          fi
+          echo "::notice::$RELEASE_NOTES is already on the branch, preparing $VERSION again."
+          for commit in $(git log --format=%H -- "$RELEASE_NOTES"); do
+            echo "Undoing $(git log -1 --format='%h %s' "$commit")"
+            git diff --no-renames "$commit^" "$commit" -- .changes | git apply -R
+          done
+      - name: Check for staged prerelease entries
         id: changes
         shell: bash
         env:
           BASE: ${{ steps.version.outputs.base }}
-          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
         run: |
-          if [[ -f "$RELEASE_NOTES" ]]; then
-            echo "::error::$RELEASE_NOTES is already on the branch, so $VERSION is prepared. The Release workflow publishes it once CI passes on the branch."
-            exit 1
-          fi
           [[ -d ".changes/$BASE" ]] && echo "staged=true" >> "$GITHUB_OUTPUT" || echo "staged=false" >> "$GITHUB_OUTPUT"
       - name: Batch prerelease changelog entries
         if: steps.version.outputs.is-prerelease == 'true'
