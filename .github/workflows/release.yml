@@ -59,6 +59,14 @@ jobs:
             echo "::notice::$version is already released."
             exit 0
           fi
+          # Entries still unreleased here were merged after the version was
+          # prepared: they ship in this commit but are missing from the notes.
+          unreleased=$(find .changes/unreleased -name '*.yaml')
+          if [[ -n "$unreleased" ]]; then
+            echo "::error::Changelog entries were merged after $version was prepared. Run Prepare release for $version again to add them to its release notes:"
+            echo "$unreleased"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           [[ "$NOTES_VERSION" == *-* ]] && echo "is-prerelease=true" >> "$GITHUB_OUTPUT" || echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
           echo "release-notes=$release_notes" >> "$GITHUB_OUTPUT"
