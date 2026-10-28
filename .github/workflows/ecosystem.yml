@@ -38,7 +38,7 @@ jobs:
         ecosystem-${{ github.run_number }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           enable-cache: true
           python-version: "3.10"
