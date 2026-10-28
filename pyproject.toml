@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling>=1.27,<2", "hatch-vcs>=0.5,<1"]
 build-backend = "hatchling.build"
 
 [project]
 name = "dbt-motherduck"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "A dbt adapter for MotherDuck's PostgreSQL endpoint"
 readme = "README.md"
 license = "Apache-2.0"
@@ -25,6 +25,13 @@ lint = ["ruff>=0.16.10,<1"]
 
 [tool.uv]
 default-groups = ["test", "lint"]
+# Without this, uv keeps the old cached version after new commits or tags
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
+
+[tool.hatch.version]
+source = "vcs"
+# PyPI rejects local versions like 0.1.1.dev3+g1a2b3c, so don't generate them
+raw-options = { local_scheme = "no-local-version" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dbt"]
