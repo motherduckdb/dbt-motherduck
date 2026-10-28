@@ -256,7 +256,7 @@ def _exercise_dbt_cancellation():
     with psycopg.connect(
         host=credentials.host,
         port=credentials.port,
-        user=credentials.user,
+        user="postgres",
         password=credentials.token,
         dbname=credentials.database,
         sslmode="verify-full",

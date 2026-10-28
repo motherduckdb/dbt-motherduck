@@ -90,7 +90,7 @@ def admin_connection(provisioning_profile_data):
     connection = psycopg.connect(
         host=credentials.host,
         port=credentials.port,
-        user=credentials.user,
+        user="postgres",
         password=credentials.token,
         dbname=credentials.database,
         sslmode="verify-full",

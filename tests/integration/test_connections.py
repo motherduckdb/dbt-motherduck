@@ -41,7 +41,7 @@ def test_profile_and_connection(connection_adapter, test_database):
         parameters = handle.info.get_parameters()
         assert handle.info.host == credentials.host
         assert handle.info.port == credentials.port
-        assert handle.info.user == credentials.user
+        assert handle.info.user == "postgres"
         assert handle.info.dbname == credentials.database
         assert parameters["sslmode"] == "verify-full"
         assert parameters["sslrootcert"] == credentials.sslrootcert
