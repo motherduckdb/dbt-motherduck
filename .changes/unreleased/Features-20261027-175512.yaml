@@ -1,3 +1,0 @@
-kind: Features
-body: Support sslrootcert="certifi" as the explicit default for certifi's bundled CA certificates, alongside system trust and custom CA bundle paths.
-time: 2026-10-27T17:55:12Z
