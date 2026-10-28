@@ -56,7 +56,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 password=credentials.token,
                 dbname=credentials.database,
                 sslmode="verify-full",
-                sslrootcert=credentials.sslrootcert,
+                sslrootcert=credentials.resolved_sslrootcert,
                 connect_timeout=credentials.connect_timeout,
                 options="-c attach_mode=single",
                 # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.

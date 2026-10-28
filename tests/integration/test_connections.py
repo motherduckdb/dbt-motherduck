@@ -44,7 +44,7 @@ def test_profile_and_connection(connection_adapter, test_database):
         assert handle.info.user == "postgres"
         assert handle.info.dbname == credentials.database
         assert parameters["sslmode"] == "verify-full"
-        assert parameters["sslrootcert"] == credentials.sslrootcert
+        assert parameters["sslrootcert"] == credentials.resolved_sslrootcert
         assert parameters["connect_timeout"] == str(credentials.connect_timeout)
         connection_adapter.connections.open(connection)
         assert connection.handle is handle
