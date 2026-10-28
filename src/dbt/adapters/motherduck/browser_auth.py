@@ -20,10 +20,9 @@ import webbrowser
 from pathlib import Path
 from threading import Event, Lock
 
-# The default public client ID; profiles can override it with `oauth_client_id`.
-# TODO: register a dedicated Auth0 application for dbt-motherduck. The prototype
-# reuses the MotherDuck CLI's client, whose logins yield short-lived tokens.
-OAUTH_CLIENT_ID = "bmRe4wSjYj1WzwqnJ6kptnyBnwKUgMlD"
+# dbt-motherduck's public Auth0 client ID; profiles can override it with
+# `oauth_client_id`.
+OAUTH_CLIENT_ID = "gfGhV0YsVtE7J7CSYgTquHwHLE9uGBMm"
 OAUTH_DEVICE_CODE_URL = "https://auth.motherduck.com/oauth/device/code"
 OAUTH_TOKEN_URL = "https://auth.motherduck.com/oauth/token"
 OAUTH_AUDIENCE = "https://dev--06syqlm.us.auth0.com/api/v2/"
