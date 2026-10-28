@@ -1,0 +1,162 @@
+name: Prepare release
+run-name: Prepare release ${{ inputs.version }} from ${{ inputs.branch }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Cutting a release: pick a branch and give it a version. The changie entries are
+# batched into the changelog and proposed in a pull request, since the branch only
+# takes commits that passed CI. Merging it releases the version: the Release
+# workflow publishes the newest release notes that have no tag yet once CI passes.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to release from
+        type: string
+        default: main
+      version:
+        description: Package version, e.g. 0.2.0, or 0.2.0a1 for a prerelease
+        type: string
+        required: true
+      dry_run:
+        description: "Dry run: don't open a pull request, just prepare the changelog."
+        type: boolean
+        default: false
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+          # Preparing a version again reads the commits that prepared it.
+          fetch-depth: 0
+      - name: Require a branch
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: git ls-remote --exit-code --heads origin "$BRANCH"
+      # Only canonical PEP 440 versions that changie can name release notes after.
+      - name: Validate version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$VERSION" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))((a|b|rc)(0|[1-9][0-9]*))?$ ]]; then
+            base="${BASH_REMATCH[1]}"
+            prerelease="${BASH_REMATCH[5]}"
+          else
+            echo "::error::Invalid version '$VERSION', expected e.g. 0.2.0 or 0.2.0a1."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null; then
+            echo "::error::Tag $VERSION already exists."
+            exit 1
+          fi
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          if [[ -n "$prerelease" ]]; then
+            echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}-${prerelease}.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "release-notes=.changes/${base}.md" >> "$GITHUB_OUTPUT"
+          fi
+      # Preparing a version again, e.g. to pick up entries merged after it was
+      # prepared, undoes the changes to .changes of every commit that touched its
+      # release notes, newest first, and batches again. This also drops any edits
+      # made to the release notes by hand.
+      - name: Undo an earlier preparation of this version
+        env:
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: |
+          if [[ ! -f "$RELEASE_NOTES" ]]; then
+            exit 0
+          fi
+          echo "::notice::$RELEASE_NOTES is already on the branch, preparing $VERSION again."
+          for commit in $(git log --format=%H -- "$RELEASE_NOTES"); do
+            echo "Undoing $(git log -1 --format='%h %s' "$commit")"
+            git diff --no-renames "$commit^" "$commit" -- .changes | git apply -R
+          done
+      - name: Check for staged prerelease entries
+        id: changes
+        shell: bash
+        env:
+          BASE: ${{ steps.version.outputs.base }}
+        run: |
+          [[ -d ".changes/$BASE" ]] && echo "staged=true" >> "$GITHUB_OUTPUT" || echo "staged=false" >> "$GITHUB_OUTPUT"
+      - name: Batch prerelease changelog entries
+        if: steps.version.outputs.is-prerelease == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --move-dir ${{ steps.version.outputs.base }}
+            --prerelease ${{ steps.version.outputs.prerelease }}
+      - name: Batch final changelog entries after prereleases
+        if: >-
+          steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'true'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: >-
+            batch ${{ steps.version.outputs.base }}
+            --include ${{ steps.version.outputs.base }}
+            --remove-prereleases
+      - name: Batch final changelog entries
+        if: >-
+          steps.version.outputs.is-prerelease == 'false'
+          && steps.changes.outputs.staged == 'false'
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: batch ${{ steps.version.outputs.base }}
+      - name: Merge changelog
+        uses: miniscruff/changie-action@6dcc2533cac0495148ed4046c438487e4dceaa23 # v2.0.0
+        with:
+          version: v1.26.0
+          args: merge
+      - name: Show release notes
+        env:
+          RELEASE_NOTES: ${{ steps.version.outputs.release-notes }}
+        run: cat "$RELEASE_NOTES" >> "$GITHUB_STEP_SUMMARY"
+      # Pushes from this workflow's token don't trigger other workflows, so CI is
+      # dispatched on the pull request branch to report the check the branch
+      # requires. A rerun before merging replaces the branch with a fresh batch.
+      - name: Open changelog pull request
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ inputs.branch }}
+          PR_BRANCH: release/${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$PR_BRANCH"
+          git add .changes CHANGELOG.md
+          git commit -m "Prepare release $VERSION"
+          git push --force origin "HEAD:refs/heads/$PR_BRANCH"
+          url=$(gh pr list --head "$PR_BRANCH" --base "$BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [[ -z "$url" ]]; then
+            url=$(gh pr create --head "$PR_BRANCH" --base "$BRANCH" \
+              --title "Prepare release $VERSION" \
+              --body "Release notes for $VERSION, opened by the Prepare release workflow. Merging this publishes $VERSION once CI passes on $BRANCH.")
+          fi
+          gh workflow run ci.yml --ref "$PR_BRANCH"
+          echo "::notice::Merge $url to publish $VERSION."
+          echo "Merge $url to publish $VERSION." >> "$GITHUB_STEP_SUMMARY"
