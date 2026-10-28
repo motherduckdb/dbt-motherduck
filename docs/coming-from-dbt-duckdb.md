@@ -1,7 +1,9 @@
 # Coming from dbt-duckdb
 
-A dbt project built using `dbt-duckdb` should work with `dbt-motherduck` with very few changes.
-This document collects intentional breaking changes, and how to migrate adapters.
+A dbt project built using `dbt-duckdb` should work with `dbt-motherduck` with very few changes,
+and execute similar SQL statements against MotherDuck.
+This document collects intentional breaking changes that might affect some projects
+if they are migrating between adapters.
 
 ## Adapter-specific configuration
 
