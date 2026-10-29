@@ -28,13 +28,40 @@ Choose the endpoint for your MotherDuck organization's [region](https://motherdu
 | `host` | Required | Regional Postgres endpoint hostname. |
 | `database` | Required | Default target database. |
 | `schema` | Required | Default target schema. |
-| `token` | Required | [MotherDuck access token](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/authenticating-to-motherduck/#authentication-using-an-access-token). |
+| `token` | Required with `authenticator: token` | [MotherDuck access token](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/authenticating-to-motherduck/#authentication-using-an-access-token). |
+| `authenticator` | `token` | `token`, or `externalbrowser` to [log in through the browser](#browser-login-sso). |
+| `oauth_client_id` | MotherDuck's public client | Auth0 application used by `externalbrowser`. |
 | `threads` | `1` | How many dbt models can execute in parallel. |
 | `port` | `5432` | Endpoint port. |
 | `connect_timeout` | `240` | Connection timeout in seconds. |
 | `sslrootcert` | `certifi` | `certifi`, `system`, or a CA bundle path. |
 | `attach_databases` | `[]` | Extra databases to attach to every session. |
 | `settings` | `{}` | DuckDB settings applied to every new session. |
+
+## Browser login (SSO)
+
+For local development, log in through your browser instead of storing a token.
+Organizations that enforce SSO get their identity provider's login page:
+
+```yaml
+dev:
+  type: motherduck
+  authenticator: externalbrowser
+  host: pg.us-east-1-aws.motherduck.com
+  database: analytics
+  schema: main
+```
+
+On the first connection dbt prints a URL and code and opens your browser. The
+resulting token is saved to `~/.motherduck/credentials.json` (or
+`$MOTHERDUCK_HOME/credentials.json`), the same file `motherduck login` uses, so
+either one logs in both. All threads share one login, and dbt logs in again if
+the saved token has expired or is rejected. `token` must be unset or empty with
+`authenticator: externalbrowser`; use the default `authenticator: token` in CI.
+
+dbt logs in through MotherDuck's own public Auth0 application by default. Set
+`oauth_client_id` to log in through a different MotherDuck-registered application,
+for example when testing against a staging environment.
 
 ## Single attach mode and database discovery
 

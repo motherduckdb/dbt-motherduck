@@ -152,3 +152,81 @@ def test_settings_exposed_in_target(cli_project):
     assert manifest["nodes"]["model.cli_test.settings"]["compiled_code"] == (
         "select insertion_order: false, time_zone: 'Europe/Amsterdam', custom: 7"
     )
+
+
+def test_externalbrowser_does_not_need_token():
+    credentials = MotherDuckCredentials.from_dict(
+        {
+            "host": "example.com",
+            "database": "db",
+            "schema": "main",
+            "authenticator": "externalbrowser",
+        }
+    )
+    assert credentials.authenticator == "externalbrowser"
+    assert credentials.token is None
+    assert ("authenticator", "externalbrowser") in credentials.connection_info()
+
+
+def test_externalbrowser_allows_empty_token():
+    credentials = MotherDuckCredentials(
+        host="example.com",
+        token="",
+        database="db",
+        schema="main",
+        authenticator="externalbrowser",
+    )
+    assert credentials.token == ""
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"authenticator": "oauth"}, "authenticator must be one of"),
+        ({"token": None}, "token is a required property"),
+        (
+            {"authenticator": "externalbrowser"},
+            "token must not be set when authenticator is 'externalbrowser'",
+        ),
+    ],
+)
+def test_invalid_authenticator_combinations(changes, message):
+    values = {
+        "host": "example.com",
+        "token": "secret",
+        "database": "db",
+        "schema": "main",
+    }
+    with pytest.raises(DbtRuntimeError, match=message):
+        MotherDuckCredentials(**(values | changes))
+
+
+def test_oauth_client_id_override():
+    credentials = MotherDuckCredentials(
+        host="example.com",
+        database="db",
+        schema="main",
+        authenticator="externalbrowser",
+        oauth_client_id="custom-client",
+    )
+    assert credentials.oauth_client_id == "custom-client"
+    assert ("oauth_client_id", "custom-client") in credentials.connection_info()
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        (
+            {"token": "secret", "oauth_client_id": "custom-client"},
+            "oauth_client_id is only used when authenticator is 'externalbrowser'",
+        ),
+        (
+            {"authenticator": "externalbrowser", "oauth_client_id": " "},
+            "oauth_client_id must be a non-empty string",
+        ),
+    ],
+)
+def test_invalid_oauth_client_id(changes, message):
+    values = {"host": "example.com", "database": "db", "schema": "main"}
+    with pytest.raises(DbtRuntimeError, match=message):
+        MotherDuckCredentials(**(values | changes))

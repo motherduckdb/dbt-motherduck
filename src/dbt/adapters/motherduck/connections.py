@@ -24,6 +24,32 @@ from dbt_common.utils import cast_to_str
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
+from dbt.adapters.motherduck.browser_auth import (
+    OAUTH_CLIENT_ID,
+    BrowserAuthenticator,
+    BrowserAuthError,
+    redact,
+)
+
+# libpq drops the server's SQLSTATE for errors raised while connecting, so a
+# rejected token can only be recognized by the MotherDuck PG endpoint's messages.
+AUTH_FAILURE_MESSAGES = (
+    # The password is not a MotherDuck token at all.
+    "invalid username/password",
+    # The endpoint reports these as invalid_password (28P01).
+    "Invalid token or user",
+    "Jwt is expired",
+    "user not found",
+    "not authenticated",
+)
+
+
+def is_auth_failure(exc):
+    return isinstance(exc, psycopg.OperationalError) and (
+        exc.sqlstate == "28P01"
+        or any(message in str(exc) for message in AUTH_FAILURE_MESSAGES)
+    )
+
 
 class MotherDuckConnectionManager(SQLConnectionManager):
     TYPE = "motherduck"
@@ -36,6 +62,10 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         # this callback is set by the MotherDuckAdapter (which owns the connection) and
         # returns which databases are needed to run the dbt project.
         self.databases_needed_callback = self._uninitialized_databases_needed
+        # Shared by all threads so `authenticator: externalbrowser` logs in once per run.
+        self.browser_authenticator = BrowserAuthenticator(
+            canceled=self.invocation_canceled
+        )
 
     def open(self, connection):
         if self.invocation_canceled.is_set():
@@ -49,19 +79,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         handle = None
         setting_name = None
         try:
-            handle = psycopg.connect(
-                host=credentials.host,
-                port=credentials.port,
-                user="postgres",
-                password=credentials.token,
-                dbname=credentials.database,
-                sslmode="verify-full",
-                sslrootcert=credentials.resolved_sslrootcert,
-                connect_timeout=credentials.connect_timeout,
-                options="-c attach_mode=single",
-                # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
-                autocommit=True,
-            )
+            handle = self._connect(credentials)
 
             # register the handle before any queries run so canceling the invocation
             # can close the connection
@@ -82,7 +100,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                             pg_sql.Identifier(setting_name), pg_sql.Literal(str(value))
                         )
                     )
-        except psycopg.Error as exc:
+        except (psycopg.Error, BrowserAuthError) as exc:
             if handle is not None:
                 handle.close()
             connection.handle = None
@@ -92,9 +110,42 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 message = (
                     f"Could not apply MotherDuck setting {setting_name!r}: {message}"
                 )
-            message = message.replace(credentials.token, "[REDACTED]")
-            raise FailedToConnectError(message) from None
+            raise FailedToConnectError(self._redact(message, credentials)) from None
         return connection
+
+    def _connect(self, credentials):
+        def connect(password):
+            return psycopg.connect(
+                host=credentials.host,
+                port=credentials.port,
+                user="postgres",
+                password=password,
+                dbname=credentials.database,
+                sslmode="verify-full",
+                sslrootcert=credentials.resolved_sslrootcert,
+                connect_timeout=credentials.connect_timeout,
+                options="-c attach_mode=single",
+                # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
+                autocommit=True,
+            )
+
+        if credentials.authenticator != "externalbrowser":
+            return connect(credentials.token)
+        client_id = credentials.oauth_client_id or OAUTH_CLIENT_ID
+        token = self.browser_authenticator.get_token(client_id)
+        try:
+            return connect(token)
+        except psycopg.OperationalError as exc:
+            if not is_auth_failure(exc):
+                raise
+            # The saved login was revoked, expired early, or is not a valid token:
+            # log in again once.
+            self.browser_authenticator.invalidate(token)
+            return connect(self.browser_authenticator.get_token(client_id))
+
+    @staticmethod
+    def _redact(message, credentials):
+        return redact(message, credentials.token)
 
     def release(self):
         # default .release() just .close()s the connections,
@@ -202,7 +253,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             connection.transaction_open = False
             connection.state = ConnectionState.CLOSED
         except Exception as exc:
-            message = str(exc).replace(connection.credentials.token, "[REDACTED]")
+            message = self._redact(str(exc), connection.credentials)
             AdapterLogger("MotherDuck").info(
                 f"Could not close connection '{connection.name}' during cancellation: {message}. "
                 "Continuing cancelling the remaining connections."
@@ -345,9 +396,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             fire_event(
                 RollbackFailed(
                     conn_name=cast_to_str(connection.name),
-                    exc_info=format_exc().replace(
-                        connection.credentials.token, "[REDACTED]"
-                    ),
+                    exc_info=cls._redact(format_exc(), connection.credentials),
                     node_info=get_node_info(),
                 )
             )
@@ -358,7 +407,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
             yield
         except psycopg.Error as exc:
             connection = self.get_thread_connection()
-            message = str(exc).replace(connection.credentials.token, "[REDACTED]")
+            message = self._redact(str(exc), connection.credentials)
             handle = connection.handle
             self.rollback_if_open()
             # dbt logs rollback failures; never reuse a session left in an unsafe state.

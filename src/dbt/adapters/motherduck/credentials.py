@@ -1,15 +1,21 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, get_args
 
 import certifi
 from dbt.adapters.contracts.connection import Credentials
 from dbt_common.exceptions import DbtRuntimeError
 
+Authenticator = Literal["token", "externalbrowser"]
+AUTHENTICATORS = get_args(Authenticator)
+
 
 @dataclass
 class MotherDuckCredentials(Credentials):
     host: str
-    token: str = field(repr=False)
+    token: str | None = field(default=None, repr=False)
+    authenticator: Authenticator = "token"
+    # Overrides the Auth0 application that `externalbrowser` logs in through.
+    oauth_client_id: str | None = None
     port: int = 5432
     sslrootcert: str = "certifi"
     connect_timeout: int = 240
@@ -17,7 +23,30 @@ class MotherDuckCredentials(Credentials):
     settings: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        for name in ("host", "token", "database", "schema", "sslrootcert"):
+        if self.authenticator not in AUTHENTICATORS:
+            raise DbtRuntimeError(
+                f"authenticator must be one of {', '.join(map(repr, AUTHENTICATORS))}"
+            )
+        if self.authenticator == "token" and self.token is None:
+            raise DbtRuntimeError(
+                "token is a required property when authenticator is 'token'"
+            )
+        # An empty token is allowed so profiles can template
+        # `token: "{{ env_var('X', '') }}"` for both modes.
+        if self.authenticator == "externalbrowser" and self.token:
+            raise DbtRuntimeError(
+                "token must not be set when authenticator is 'externalbrowser'"
+            )
+        if self.authenticator != "externalbrowser" and self.oauth_client_id is not None:
+            raise DbtRuntimeError(
+                "oauth_client_id is only used when authenticator is 'externalbrowser'"
+            )
+        names = ("host", "database", "schema", "sslrootcert")
+        if self.authenticator == "token":
+            names = ("token", *names)
+        if self.oauth_client_id is not None:
+            names = (*names, "oauth_client_id")
+        for name in names:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
                 raise DbtRuntimeError(
@@ -71,6 +100,8 @@ class MotherDuckCredentials(Credentials):
     def _connection_keys(self):
         return (
             "host",
+            "authenticator",
+            "oauth_client_id",
             "port",
             "database",
             "schema",
