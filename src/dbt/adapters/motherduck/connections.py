@@ -24,6 +24,7 @@ from dbt_common.utils import cast_to_str
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
+from dbt.adapters.motherduck.__version__ import version
 from dbt.adapters.motherduck.browser_auth import (
     OAUTH_CLIENT_ID,
     BrowserAuthenticator,
@@ -124,6 +125,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 sslmode="verify-full",
                 sslrootcert=credentials.resolved_sslrootcert,
                 connect_timeout=credentials.connect_timeout,
+                application_name=f"dbt-motherduck/{version}",
                 options="-c attach_mode=single",
                 # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
                 autocommit=True,

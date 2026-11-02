@@ -1,0 +1,5 @@
+kind: Under the Hood
+body: Include the adapter name and version in the user agent
+time: 2026-11-02T00:00:00+01:00
+custom:
+  Issue: TBD

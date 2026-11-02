@@ -20,6 +20,7 @@ from dbt_common.events import get_event_manager
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 
+from dbt.adapters.motherduck.__version__ import version
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
@@ -38,6 +39,9 @@ def test_profile_and_connection(connection_adapter, test_database):
         assert handle.execute(
             "select current_setting('motherduck_attach_mode')"
         ).fetchone() == ("single",)
+        assert handle.execute(
+            "select current_setting('custom_user_agent')"
+        ).fetchone() == (f"pgendpoint(dbt-motherduck/{version})",)
         parameters = handle.info.get_parameters()
         assert handle.info.host == credentials.host
         assert handle.info.port == credentials.port
