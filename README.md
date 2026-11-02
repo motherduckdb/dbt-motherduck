@@ -8,6 +8,12 @@ This dbt v1 adapter allows you to run dbt v1 projects in MotherDuck. The [DuckDB
 but each adapter supports MotherDuck in different ways.
 `dbt-motherduck` leverages MotherDuck's [Postgres Endpoint](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/postgres-endpoint/) and executes queries via Postgres connections,
 while `dbt-duckdb` spawns a DuckDB process that loads the MotherDuck DuckDB extension.
+
+- With `dbt-duckdb` you need to manage the version of the DuckDB client, since there are frequent releases and old versions get deprecated. With `dbt-motherduck` you don't need to manage the DuckDB client life-cycle.
+- `dbt-motherduck` consumes less resources client-side than `dbt-duckdb`.
+- The DuckDB client running with `dbt-duckdb` needs to dynamically load the MotherDuck extensions at runtime, which is undesirable to teams running dbt on restricted networking environments.
+- If you need Hybrid Execution (individual queries executing both in your client and on MotherDuck), you cannot use `dbt-motherduck` and need to use `dbt-duckdb` since this adapter doesn't use a local DuckDB client. Most dbt workloads only use data reachable from the Ducklings (e.g. hosted on MD, on blob storage, REST catalogs), so they don't need Hybrid Execution.
+
 A dbt project built using `dbt-duckdb` should work with `dbt-motherduck` with very few changes (documented [here](docs/coming-from-dbt-duckdb.md)), and execute similar SQL statements against MotherDuck.
 
 To get started, install `dbt-motherduck` from PyPI and add your MotherDuck credentials on `profiles.yml`. E.g.:
