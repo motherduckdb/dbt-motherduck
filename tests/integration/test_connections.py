@@ -20,13 +20,27 @@ from dbt_common.events import get_event_manager
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 
+from dbt.adapters.motherduck.__version__ import version
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 
-def test_profile_and_connection(connection_adapter, test_database):
+@pytest.mark.parametrize(
+    "session_name",
+    [
+        None,
+        "dbt.prod",
+        "dbt-prod",
+        "dbt_prod",
+        "dbt/prod",
+        "dbt.prod-run_1/nightly",
+        r"dbt's nightly \job -c attach_mode=workspace",
+    ],
+)
+def test_profile_and_connection(connection_adapter, test_database, session_name):
     assert isinstance(connection_adapter, MotherDuckAdapter)
     assert connection_adapter.config.threads == 2
     credentials = connection_adapter.config.credentials
+    credentials.session_name = session_name
     assert credentials.database == test_database
     assert credentials.type == "motherduck"
     assert credentials.token not in repr(credentials)
@@ -38,6 +52,13 @@ def test_profile_and_connection(connection_adapter, test_database):
         assert handle.execute(
             "select current_setting('motherduck_attach_mode')"
         ).fetchone() == ("single",)
+        assert handle.execute(
+            "select current_setting('custom_user_agent')"
+        ).fetchone() == (f"pgendpoint(dbt-motherduck/{version})",)
+        if session_name is not None:
+            assert handle.execute(
+                "select current_setting('motherduck_session_name')"
+            ).fetchone() == (session_name,)
         parameters = handle.info.get_parameters()
         assert handle.info.host == credentials.host
         assert handle.info.port == credentials.port

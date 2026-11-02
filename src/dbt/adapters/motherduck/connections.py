@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from threading import Event
 from time import perf_counter
@@ -24,6 +25,7 @@ from dbt_common.utils import cast_to_str
 from psycopg import sql as pg_sql
 from sqlparse import lexer
 
+from dbt.adapters.motherduck.__version__ import version
 from dbt.adapters.motherduck.browser_auth import (
     OAUTH_CLIENT_ID,
     BrowserAuthenticator,
@@ -114,6 +116,14 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         return connection
 
     def _connect(self, credentials):
+        options = "-c attach_mode=single"
+        if credentials.session_name is not None:
+            # postgres and the pg_endpoint rejects white-spaces or backslashes,
+            # but duckdb clients accept them. the pg_endpoint correctly de-escapes them
+            # so the session_name looks clean once it reaches the Ducklings
+            session_name = re.sub(r"([\s\\])", r"\\\1", credentials.session_name)
+            options += f" -c session_name={session_name}"
+
         def connect(password):
             return psycopg.connect(
                 host=credentials.host,
@@ -124,7 +134,8 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 sslmode="verify-full",
                 sslrootcert=credentials.resolved_sslrootcert,
                 connect_timeout=credentials.connect_timeout,
-                options="-c attach_mode=single",
+                application_name=f"dbt-motherduck/{version}",
+                options=options,
                 # dbt's connection manager owns explicit BEGIN/COMMIT boundaries.
                 autocommit=True,
             )

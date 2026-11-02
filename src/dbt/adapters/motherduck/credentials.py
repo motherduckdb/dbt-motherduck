@@ -19,6 +19,7 @@ class MotherDuckCredentials(Credentials):
     port: int = 5432
     sslrootcert: str = "certifi"
     connect_timeout: int = 240
+    session_name: str | None = None
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
 
@@ -46,6 +47,8 @@ class MotherDuckCredentials(Credentials):
             names = ("token", *names)
         if self.oauth_client_id is not None:
             names = (*names, "oauth_client_id")
+        if self.session_name is not None:
+            names = (*names, "session_name")
         for name in names:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
@@ -107,6 +110,7 @@ class MotherDuckCredentials(Credentials):
             "schema",
             "sslrootcert",
             "connect_timeout",
+            "session_name",
             "attach_databases",
             "settings",
         )
