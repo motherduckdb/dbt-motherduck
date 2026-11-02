@@ -14,6 +14,7 @@ dwh:
       database: analytics
       schema: main
       token: "{{ env_var('DBT_ENV_SECRET_MOTHERDUCK_TOKEN') }}"
+      session_name: dbt-prod-nightly
       sslrootcert: certifi
       threads: 4
       settings:
@@ -34,6 +35,7 @@ Choose the endpoint for your MotherDuck organization's [region](https://motherdu
 | `threads` | `1` | How many dbt models can execute in parallel. |
 | `port` | `5432` | Endpoint port. |
 | `connect_timeout` | `240` | Connection timeout in seconds. |
+| `session_name` | None | Metadata passed to MotherDuck to tag workloads. It's visible on query history. |
 | `sslrootcert` | `certifi` | `certifi`, `system`, or a CA bundle path. |
 | `attach_databases` | `[]` | Extra databases to attach to every session. |
 | `settings` | `{}` | DuckDB settings applied to every new session. |

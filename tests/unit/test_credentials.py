@@ -16,8 +16,30 @@ def test_defaults():
     assert credentials.sslrootcert == "certifi"
     assert credentials.resolved_sslrootcert == certifi.where()
     assert credentials.connect_timeout == 240
+    assert credentials.session_name is None
     assert credentials.attach_databases == []
     assert credentials.settings == {}
+
+
+@pytest.mark.parametrize(
+    "session_name",
+    ["dbt.prod", "dbt-prod", "dbt_prod", "dbt/prod", "dbt.prod-run_1/nightly"],
+)
+def test_session_name_round_trip(session_name):
+    credentials = MotherDuckCredentials.from_dict(
+        {
+            "host": "example.com",
+            "token": "secret",
+            "database": "db",
+            "schema": "main",
+            "session_name": session_name,
+        }
+    )
+    assert credentials.session_name == session_name
+    assert (
+        MotherDuckCredentials.from_dict(credentials.to_dict()).session_name
+        == session_name
+    )
 
 
 @pytest.mark.parametrize(
@@ -76,6 +98,12 @@ def test_certifi_default_exposed_in_target(cli_project, sslrootcert):
         {"port": 65536},
         {"port": True},
         {"connect_timeout": 0},
+        {"session_name": ""},
+        {"session_name": " "},
+        {"session_name": "name\x00"},
+        {"session_name": 1},
+        {"session_name": False},
+        {"session_name": []},
         {"attach_databases": "other"},
         {"attach_databases": None},
         {"attach_databases": [""]},
