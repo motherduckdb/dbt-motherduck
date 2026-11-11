@@ -141,7 +141,12 @@ def test_database(temporary_database):
 
 @pytest.fixture(scope="session")
 def profile_data(provisioning_profile_data, test_database):
-    return {**provisioning_profile_data, "database": test_database}
+    return {
+        **provisioning_profile_data,
+        "database": test_database,
+        # A failed Flight otherwise points at a URL and hides the traceback.
+        "flights": {"log_lines": 40},
+    }
 
 
 @pytest.fixture(scope="class")

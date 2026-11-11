@@ -1,17 +1,21 @@
 """Python models execute on MotherDuck Flights.
 
-The base dbt cases that use a DuckDB relation (ref, limit, filter, empty, sample)
-run here. Spark-only helpers such as session.createDataFrame do not. Accounts
-without Flights skip these tests.
+The base model test uses tables rather than views: DuckLake views are not what
+this checks, and the upstream SQL is a view by default. Empty and sample mode
+fixtures use a non-UTC timestamp literal the endpoint rejects. Spark-only
+helpers such as session.createDataFrame are not part of the Flight runtime.
+Accounts without Flights skip these tests.
 """
 
 import pytest
 from dbt.tests.adapter.python_model.test_python_model import (
-    BasePythonEmptyTests,
     BasePythonIncrementalTests,
     BasePythonModelTests,
-    BasePythonSampleTests,
+    basic_python,
+    basic_sql,
     m_1,
+    schema_yml,
+    second_sql,
 )
 from dbt.tests.util import run_dbt
 
@@ -25,15 +29,18 @@ def _require_flights(project):
 
 
 class TestPythonModel(BasePythonModelTests):
-    pass
-
-
-class TestPythonEmpty(BasePythonEmptyTests):
-    pass
-
-
-class TestPythonSample(BasePythonSampleTests):
-    pass
+    @pytest.fixture(scope="class")
+    def models(self):
+        # Default materialization is a view. DuckLake rejected the Flight's read
+        # of those views; tables are the relation this runtime materializes.
+        table = "{{ config(materialized='table') }}\n" + basic_sql
+        return {
+            "schema.yml": schema_yml,
+            "my_sql_model.sql": table,
+            "my_versioned_sql_model_v1.sql": table,
+            "my_python_model.py": basic_python,
+            "second_sql_model.sql": second_sql,
+        }
 
 
 incremental_python = """
@@ -72,6 +79,8 @@ failing_python_model = """
 def model(dbt, session):
     dbt.config(materialized="table")
     raise ValueError("python model blew up")
+    # dbt's parser requires the model function to end in a return.
+    return session.query("select 1 as id")
 """
 
 
