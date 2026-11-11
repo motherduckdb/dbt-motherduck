@@ -30,9 +30,9 @@ from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
 from dbt.adapters.motherduck.credentials import FlightConfig
 from dbt.adapters.motherduck.flights import (
     FLIGHT_NAME_KEY,
-    FLIGHT_SUBMISSION,
     FlightRunner,
     FlightSqlCursor,
+    is_flight_submission,
     unsupported_submission_message,
 )
 from dbt.adapters.motherduck.relation import MotherDuckRelation
@@ -302,19 +302,19 @@ class MotherDuckAdapter(SQLAdapter):
 
     @available
     def python_submission_error(self, submission_method):
+        # Empty when the model should run. Omitting submission_method means flight.
+        if is_flight_submission(submission_method):
+            return ""
         return unsupported_submission_message(str(submission_method))
 
     def submit_python_job(
         self, parsed_model: dict, compiled_code: str
     ) -> AdapterResponse:
-        method = (parsed_model.get("config") or {}).get(
-            "submission_method"
-        ) or FLIGHT_SUBMISSION
-        if method != FLIGHT_SUBMISSION:
-            raise DbtRuntimeError(unsupported_submission_message(method))
-        # The Flight commits from its own session. End this worker's transaction
-        # first so the rename or merge afterwards snapshots that commit.
-        self.commit_if_has_connection()
+        method = (parsed_model.get("config") or {}).get("submission_method")
+        if not is_flight_submission(method):
+            raise DbtRuntimeError(unsupported_submission_message(str(method)))
+        # Inside-transaction hooks run after this returns, in the rename or
+        # merge transaction. Nothing of the user's is open while the Flight runs.
         return self._get_flight_runner().submit(
             FlightSqlCursor(self.connections),
             self._with_flight_name(parsed_model),

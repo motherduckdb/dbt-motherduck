@@ -27,8 +27,11 @@
 
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
 
-  -- `BEGIN` happens here:
-  {{ run_hooks(pre_hooks, inside_transaction=True) }}
+  -- SQL models run inside-transaction hooks before the build. A Python Flight
+  -- commits from its own session, so those hooks run after it, with the rename.
+  {% if language != 'python' %}
+    {{ run_hooks(pre_hooks, inside_transaction=True) }}
+  {% endif %}
   {%- set partitioned_by = motherduck__get_partitioned_by(target_relation, false) -%}
   {%- set sorted_by = motherduck__get_sorted_by(target_relation, false) -%}
 
@@ -36,6 +39,10 @@
   {% call statement('main', language=language) -%}
     {{- create_table_as(False, intermediate_relation, compiled_code, language, partitioned_by=partitioned_by, sorted_by=sorted_by) }}
   {%- endcall %}
+
+  {% if language == 'python' %}
+    {{ run_hooks(pre_hooks, inside_transaction=True) }}
+  {% endif %}
 
   -- cleanup
   {% if existing_relation is not none %}

@@ -14,7 +14,9 @@ from dbt.adapters.motherduck.flights import (
     FlightSqlCursor,
     build_requirements,
     build_source,
+    is_flight_submission,
     sanitize_flight_name,
+    settings_statements,
     unsupported_submission_message,
 )
 from dbt.adapters.motherduck.impl import MotherDuckAdapter
@@ -103,12 +105,20 @@ def test_build_source_rejects_oversized_model():
 
 
 def test_build_source_applies_profile_settings_and_drops_secrets():
-    source = build_source(
-        COMPILED_CODE,
-        {"TimeZone": "UTC", "motherduck_token": "secret-value", "custom": "a'b"},
-    )
-    assert "SET TimeZone = 'UTC'" in source
-    assert "SET custom = 'a''b'" in source
+    settings = {
+        "TimeZone": "UTC",
+        "custom setting": "1",
+        "motherduck_token": "secret-value",
+        "custom": "a'b",
+    }
+    # Names are quoted, matching the worker connection. A space in the name
+    # must not split the SET.
+    assert settings_statements(settings) == [
+        "SET \"TimeZone\" = 'UTC'",
+        "SET \"custom setting\" = '1'",
+        "SET \"custom\" = 'a''b'",
+    ]
+    source = build_source(COMPILED_CODE, settings)
     assert "secret-value" not in source
     assert source.count("__dbt_apply_settings(") == 3
 
@@ -145,6 +155,11 @@ def test_commit_if_has_connection_is_visible_to_jinja():
     # Incremental materializations call this. The jinja wrapper hides anything
     # not marked @available, which failed every incremental model in CI.
     assert "commit_if_has_connection" in MotherDuckAdapter._available_
+
+
+@pytest.mark.parametrize("method", [None, "", "  ", "flight", "flights", " Flight "])
+def test_omitted_submission_method_runs_on_a_flight(method):
+    assert is_flight_submission(method)
 
 
 def test_local_submission_is_rejected_with_a_reason():

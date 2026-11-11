@@ -20,6 +20,8 @@ from dbt_common.exceptions import DbtRuntimeError
 logger = AdapterLogger("MotherDuck")
 
 FLIGHT_SUBMISSION = "flight"
+# Omitted submission_method means flight. "flights" is the same choice.
+FLIGHT_SUBMISSIONS = frozenset({FLIGHT_SUBMISSION, "flights"})
 FLIGHT_NAME_KEY = "__dbt_motherduck_flight_name"
 
 # SQL functions return the short form. The docs' RUN_STATUS_* names are accepted too.
@@ -88,6 +90,13 @@ if __name__ == "__main__":
 """
 
 
+def is_flight_submission(method: Any) -> bool:
+    """Missing, blank, flight, and flights all run on a Flight."""
+    if method is None:
+        return True
+    return str(method).strip().lower() in FLIGHT_SUBMISSIONS or not str(method).strip()
+
+
 def unsupported_submission_message(method: str) -> str:
     return UNSUPPORTED_SUBMISSION.format(method=method)
 
@@ -102,6 +111,10 @@ def _distribution_name(requirement: str) -> str | None:
 
 def escape_sql_string(value: Any) -> str:
     return str(value).replace("'", "''")
+
+
+def quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def sanitize_flight_name(name: str) -> str:
@@ -131,7 +144,7 @@ def _normalize_status(status: Any) -> str:
 def settings_statements(settings: dict[str, Any] | None) -> list[str]:
     """Profile settings as SET statements, omitting anything that is a secret."""
     return [
-        f"SET {key} = '{escape_sql_string(value)}'"
+        f"SET {quote_identifier(key)} = '{escape_sql_string(value)}'"
         for key, value in (settings or {}).items()
         if key.lower() not in SECRET_SETTINGS
     ]

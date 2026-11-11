@@ -1,11 +1,9 @@
 """Python models execute on MotherDuck Flights.
 
-These create real Flights. They are opt-in: set DBT_MOTHERDUCK_TEST_FLIGHTS=1.
 The base dbt cases that use a DuckDB relation (ref, limit, filter, empty, sample)
-run here. Spark-only helpers such as session.createDataFrame do not.
+run here. Spark-only helpers such as session.createDataFrame do not. Accounts
+without Flights skip these tests.
 """
-
-import os
 
 import pytest
 from dbt.tests.adapter.python_model.test_python_model import (
@@ -17,12 +15,13 @@ from dbt.tests.adapter.python_model.test_python_model import (
 )
 from dbt.tests.util import run_dbt
 
-FLIGHTS_ENABLED = os.getenv("DBT_MOTHERDUCK_TEST_FLIGHTS", "") in ("1", "true", "True")
 
-pytestmark = pytest.mark.skipif(
-    not FLIGHTS_ENABLED,
-    reason="Set DBT_MOTHERDUCK_TEST_FLIGHTS=1 to run Python models on real MotherDuck Flights",
-)
+@pytest.fixture(scope="class", autouse=True)
+def _require_flights(project):
+    try:
+        project.run_sql('select 1 from MD_LIST_FLIGHTS("limit" := 1)', fetch="all")
+    except Exception as err:
+        pytest.skip(f"MotherDuck Flights are not available on this account: {err}")
 
 
 class TestPythonModel(BasePythonModelTests):

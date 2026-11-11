@@ -54,9 +54,9 @@
     {% endif %}
   {% endif %}
   {%- elif language == 'python' -%}
-    {%- set submission_method = config.get('submission_method', 'flight') -%}
-    {%- if submission_method != 'flight' -%}
-      {% do exceptions.raise_compiler_error(adapter.python_submission_error(submission_method)) %}
+    {%- set submission_error = adapter.python_submission_error(config.get('submission_method', none)) -%}
+    {%- if submission_error -%}
+      {% do exceptions.raise_compiler_error(submission_error) %}
     {%- endif -%}
     {{ py_write_table(temporary=temporary, relation=relation, compiled_code=compiled_code, partitioned_by=partitioned_by, sorted_by=sorted_by) }}
   {%- else -%}

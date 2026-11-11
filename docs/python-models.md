@@ -2,14 +2,18 @@
 
 `dbt-motherduck` runs [dbt Python models](https://docs.getdbt.com/docs/build/python-models) as [MotherDuck Flights](https://motherduck.com/docs/key-tasks/flights/). The Postgres endpoint that this adapter uses has no local Python runtime, so a model cannot execute in the dbt process.
 
-`submission_method` other than `flight` is rejected when the model is built. Table and incremental models run on Flights. Python views, ephemeral models, and snapshots are rejected.
+Leave `submission_method` unset. It defaults to a Flight. `flight` and `flights` are the same choice. Any other value is rejected when the model is built, because this adapter has no local Python runtime.
+
+Table and incremental models run on Flights. Python views and snapshots have no Python materialization here.
+
+An ephemeral model is not run by dbt. dbt pastes its compiled code into the downstream query as a CTE (`with name as ( <compiled code> )`). That paste is a `SELECT` for a SQL model. A Python model compiles to a function, so there is nothing to paste and no adapter call that could run the Flight first. Use `materialized='table'` for a Python model other models `ref()`.
 
 ## How a model runs
 
 1. dbt compiles the model and appends `dbt.ref`, `dbt.source`, `dbt.config`, `dbt.this`, and `dbt.is_incremental`.
 2. The adapter adds `materialize()` and a `main()` that connects with `duckdb.connect("md:")` inside the Flight.
-3. The worker commits any open transaction on its Postgres session, then creates or reuses a Flight and polls the run. Reusing a Flight whose source, requirements, token, timeout, and instance size are unchanged does not mint a new version.
-4. The Flight writes the table from its own session and commits when `main()` finishes. The worker then renames that table, or merges the staging table with the incremental strategy, in a new transaction so it can see the Flight's commit.
+3. The worker creates or reuses a Flight and polls the run. Reusing a Flight whose source, requirements, token, timeout, and instance size are unchanged does not mint a new version. The Flight runs outside the worker's transaction.
+4. The Flight writes an intermediate or staging table and commits when `main()` finishes. Inside-transaction pre-hooks, the rename or merge, indexes, and post-hooks then share one worker transaction, so a hook failure does not publish the final table.
 5. Cancelling dbt, or exceeding `flights.timeout_sec`, cancels the Flight run and waits until it has stopped. A run left writing would recreate a temp table that dbt had already dropped.
 
 Each model has its own Flight, named `dbt-<package>-<database>-<schema>-<alias>`. Names are unique per MotherDuck user, and only the owner can run a Flight. Override `motherduck__flight_name` when two projects would share a name.
@@ -45,7 +49,7 @@ def model(dbt, session):
 | `materialized` | `table` or `incremental`. |
 | `packages` | Extra `requirements.txt` lines for this model. They override `flights.requirements` for the same distribution. |
 | `instance_type` | Flight runner size: `F4`, `F16`, or `F32`. Overrides the profile. MotherDuck rejects a size your plan does not allow. |
-| `submission_method` | Only `flight`. Anything else is rejected. |
+| `submission_method` | Optional. Defaults to `flight`. `flights` is accepted. Anything else is rejected. |
 
 Incremental models use the same strategies as SQL models. The Flight writes the staging table; the worker applies append, delete+insert, merge, or microbatch. `dbt.is_incremental` is false on the first build and true after that.
 
@@ -85,8 +89,9 @@ The Flight token must be allowed to read every relation the model refs or source
 
 ## Not supported
 
-- `submission_method: local`, or any submission method other than `flight`
-- Python views, ephemeral models, and snapshots
+- A `submission_method` other than `flight` or `flights`. Omitting it runs on a Flight
+- Python views and snapshots
+- Ephemeral Python models, because dbt inlines them as SQL CTEs and never runs them
 - Reading local files, environment files, or the worker session's temporary tables
 - Installing system packages from inside the model
 - Returning a Spark `session.createDataFrame(...)` result; return a DuckDB relation or a dataframe library listed above
