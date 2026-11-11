@@ -54,11 +54,45 @@
     {% endif %}
   {% endif %}
   {%- elif language == 'python' -%}
-    {{ exceptions.raise_compiler_error('Python models are not supported by dbt-motherduck') }}
+    {%- set submission_method = config.get('submission_method', 'flight') -%}
+    {%- if submission_method != 'flight' -%}
+      {% do exceptions.raise_compiler_error(adapter.python_submission_error(submission_method)) %}
+    {%- endif -%}
+    {{ py_write_table(temporary=temporary, relation=relation, compiled_code=compiled_code, partitioned_by=partitioned_by, sorted_by=sorted_by) }}
   {%- else -%}
       {% do exceptions.raise_compiler_error("motherduck__create_table_as macro didn't get supported language, it got %s" % language) %}
   {%- endif -%}
 {% endmacro %}
+
+{% macro py_write_table(temporary, relation, compiled_code, partitioned_by=none, sorted_by=none) -%}
+{{ compiled_code }}
+
+def materialize(df, con):
+    try:
+        import pyarrow
+        pyarrow_available = True
+    except ImportError:
+        pyarrow_available = False
+    finally:
+        if pyarrow_available and isinstance(df, pyarrow.Table):
+            # https://github.com/duckdb/duckdb/issues/6584
+            import pyarrow.dataset
+    tmp_name = '__dbt_python_model_df_' + '{{ relation.identifier }}'
+    con.register(tmp_name, df)
+    {% if partitioned_by or sorted_by %}
+    con.execute('create table {{ relation }} as select * from ' + tmp_name + ' limit 0')
+    {% if partitioned_by %}
+    con.execute('alter table {{ relation }} set partitioned by ({{ partitioned_by }})')
+    {% endif %}
+    {% if sorted_by %}
+    con.execute('alter table {{ relation }} set sorted by ({{ sorted_by }})')
+    {% endif %}
+    con.execute('insert into {{ relation }} select * from ' + tmp_name)
+    {% else %}
+    con.execute('create table {{ relation }} as select * from ' + tmp_name)
+    {% endif %}
+    con.unregister(tmp_name)
+{%- endmacro %}
 
 {% macro motherduck__create_view_as(relation, sql) -%}
   {% set contract_config = config.get('contract') %}

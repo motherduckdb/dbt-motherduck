@@ -40,7 +40,7 @@ dwh:
 - [Incremental models](docs/incremental-models.md): strategies and timestamp-based pruning.
 - [DuckLake](docs/ducklake.md): partitioning, sort order, and supported options.
 - [Reading and writing external files](docs/external-files.md): remote sources and exports.
-- [Python models](docs/python-models.md): current support and upcoming MotherDuck Flights integration.
+- [Python models](docs/python-models.md): running models on MotherDuck Flights.
 - [Coming from dbt-duckdb](docs/coming-from-dbt-duckdb.md): overview of the few caveats that might impact you if you are migrating a project from `dbt-duckdb`.
 
 For general dbt concepts, project configuration, and commands, see the [dbt documentation](https://docs.getdbt.com/docs/introduction).

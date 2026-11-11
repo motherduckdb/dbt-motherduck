@@ -2,7 +2,8 @@
    dbt/include/duckdb/macros/materializations/incremental.sql.
    MotherDuck uses regular tables in a staging schema, with post-commit cleanup
    and a post-model hook for failures. #}
-{% materialization incremental, adapter='motherduck' %}
+{% materialization incremental, adapter='motherduck', supported_languages=['sql', 'python'] %}
+  {% set language = model['language'] %}
   {% set existing_relation = load_cached_relation(this) %}
   {% set target_relation = this.incorporate(type='table') %}
   {% set intermediate_relation = make_intermediate_relation(target_relation) %}
@@ -32,11 +33,26 @@
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
   {% if existing_relation is none %}
-    {% set build_sql = create_table_as(false, target_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% if language == 'python' %}
+      {% set build_sql = create_table_as(false, target_relation, compiled_code, 'python', partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% else %}
+      {% set build_sql = create_table_as(false, target_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% endif %}
   {% elif full_refresh_mode %}
-    {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% if language == 'python' %}
+      {% set build_sql = create_table_as(false, intermediate_relation, compiled_code, 'python', partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% else %}
+      {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% endif %}
   {% else %}
-    {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
+    {% if language == 'python' %}
+      {# The Flight writes the staging table. The strategy below merges it in SQL. #}
+      {% call statement('pre', language='python') %}
+        {{ create_table_as(false, temp_relation, compiled_code, 'python') }}
+      {% endcall %}
+    {% else %}
+      {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
+    {% endif %}
     {% do to_drop.append(temp_relation) %}
     {% do adapter.expand_target_column_types(from_relation=temp_relation, to_relation=target_relation) %}
     {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
@@ -50,9 +66,10 @@
         'dest_columns': dest_columns,
         'incremental_predicates': config.get('predicates') or config.get('incremental_predicates')
     }) %}
+    {% set language = 'sql' %}
   {% endif %}
 
-  {% call statement('main') %}
+  {% call statement('main', language=language) %}
     {{ build_sql }}
   {% endcall %}
   {% if existing_relation and full_refresh_mode %}
@@ -67,7 +84,8 @@
   {% endif %}
   {% do persist_docs(target_relation, model) %}
   {{ run_hooks(post_hooks, inside_transaction=True) }}
-  {% do adapter.commit() %}
+  {# A Python model writes from the Flight, outside this worker's transaction. #}
+  {% do adapter.commit_if_has_connection() %}
   {% for relation in to_drop %}
     {% do adapter.drop_relation(relation) %}
   {% endfor %}

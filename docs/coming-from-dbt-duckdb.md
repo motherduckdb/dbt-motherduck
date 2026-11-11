@@ -86,3 +86,7 @@ attach_databases:
 ```
 
 See the [single attach mode and database discovery](connection.md#single-attach-mode-and-database-discovery) adapter documentation.
+
+## Python models
+
+`dbt-duckdb` runs Python models in the dbt process unless a model sets `submission_method: flight`. This adapter has no local DuckDB process, so Python models always run on MotherDuck Flights. `submission_method: local` is rejected when the model is built. `packages`, `instance_type`, and the profile `flights` block work as they do for dbt-duckdb Flights. `module_paths` and local plugins are not available. See [Python models](python-models.md).
