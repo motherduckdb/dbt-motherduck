@@ -58,10 +58,14 @@ FLIGHT_ENTRYPOINT = """
 
 # --- dbt-motherduck flight entrypoint (generated) ---
 __dbt_settings = {settings!r}
+__dbt_attach = {attach!r}
 
 
-def __dbt_apply_settings(cursor):
+def __dbt_prepare(cursor):
     for statement in __dbt_settings:
+        cursor.execute(statement)
+    # md: does not attach the worker's databases. Qualified refs need them.
+    for statement in __dbt_attach:
         cursor.execute(statement)
 
 
@@ -69,7 +73,7 @@ def main():
     import duckdb as _duckdb
 
     con = _duckdb.connect("md:")
-    __dbt_apply_settings(con)
+    __dbt_prepare(con)
 
     def load_df_function(table_name):
         return con.query(f"select * from {{table_name}}")
@@ -81,7 +85,7 @@ def main():
         materialize(df, con)
     else:
         write_cursor = con.cursor()
-        __dbt_apply_settings(write_cursor)
+        __dbt_prepare(write_cursor)
         materialize(df, write_cursor)
 
 
@@ -150,9 +154,25 @@ def settings_statements(settings: dict[str, Any] | None) -> list[str]:
     ]
 
 
-def build_source(compiled_code: str, settings: dict[str, Any] | None = None) -> str:
+def attach_statements(databases: list[str] | None) -> list[str]:
+    """ATTACH the databases the worker already uses, so qualified refs resolve."""
+    return [
+        f"ATTACH IF NOT EXISTS 'md:{escape_sql_string(name)}'"
+        for name in databases or []
+        if name
+    ]
+
+
+def build_source(
+    compiled_code: str,
+    settings: dict[str, Any] | None = None,
+    databases: list[str] | None = None,
+) -> str:
     """Turn a model's compiled Python into a Flight entrypoint."""
-    entrypoint = FLIGHT_ENTRYPOINT.format(settings=settings_statements(settings))
+    entrypoint = FLIGHT_ENTRYPOINT.format(
+        settings=settings_statements(settings),
+        attach=attach_statements(databases),
+    )
     source = compiled_code.lstrip() + entrypoint
     size = len(source.encode("utf-8"))
     if size > MAX_SOURCE_BYTES:
@@ -284,11 +304,15 @@ class FlightRunner:
         self._lock = Lock()
 
     def submit(
-        self, cursor, parsed_model: dict[str, Any], compiled_code: str
+        self,
+        cursor,
+        parsed_model: dict[str, Any],
+        compiled_code: str,
+        databases: list[str] | None = None,
     ) -> AdapterResponse:
         name = self.flight_name(parsed_model)
         spec = FlightSpec(
-            source=build_source(compiled_code, self._settings),
+            source=build_source(compiled_code, self._settings, databases),
             requirements=build_requirements(parsed_model, self._config),
             instance_type=self.instance_type(parsed_model),
             access_token_name=self._config.access_token_name,

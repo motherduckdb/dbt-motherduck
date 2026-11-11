@@ -12,6 +12,7 @@ from dbt.adapters.motherduck.flights import (
     FlightRunner,
     FlightSpec,
     FlightSqlCursor,
+    attach_statements,
     build_requirements,
     build_source,
     is_flight_submission,
@@ -89,6 +90,16 @@ def test_flight_name_rejects_an_empty_macro_result():
         sanitize_flight_name("///")
 
 
+def test_flight_attaches_the_worker_databases():
+    # A fresh md: session does not see the database the Postgres worker uses.
+    assert attach_statements(["analytics", "raw"]) == [
+        "ATTACH IF NOT EXISTS 'md:analytics'",
+        "ATTACH IF NOT EXISTS 'md:raw'",
+    ]
+    source = build_source("x = 1\n", databases=["analytics"])
+    assert "ATTACH IF NOT EXISTS 'md:analytics'" in source
+
+
 def test_build_source_appends_entrypoint():
     source = build_source(COMPILED_CODE)
     assert source.startswith("def model(dbt, session):")
@@ -120,7 +131,7 @@ def test_build_source_applies_profile_settings_and_drops_secrets():
     ]
     source = build_source(COMPILED_CODE, settings)
     assert "secret-value" not in source
-    assert source.count("__dbt_apply_settings(") == 3
+    assert source.count("__dbt_prepare(") == 3
 
 
 def test_build_requirements_pins_the_documented_duckdb_version():

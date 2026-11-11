@@ -78,7 +78,7 @@ dev:
 
 `access_token_name` is the label of a token stored in MotherDuck, not the token value. The Flight runtime injects that token as `MOTHERDUCK_TOKEN`. The dbt profile token is only used for the Postgres session that creates and polls the Flight, and it is not written into the Flight source.
 
-The Flight token must be allowed to read every relation the model refs or sources, and to write the database the model materializes. With single attach mode, the worker attaches the databases dbt discovered; the Flight's `md:` connection can see the MotherDuck databases that its own token can access, under those database names.
+The Flight token must be allowed to read every relation the model refs or sources, and to write the database the model materializes. A fresh `md:` connection does not attach those databases, so the Flight runs `ATTACH IF NOT EXISTS` for every database dbt discovered before it reads a `ref` or `source`.
 
 ## Security
 

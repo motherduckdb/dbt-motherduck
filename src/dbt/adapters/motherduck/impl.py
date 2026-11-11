@@ -319,6 +319,7 @@ class MotherDuckAdapter(SQLAdapter):
             FlightSqlCursor(self.connections),
             self._with_flight_name(parsed_model),
             compiled_code,
+            databases=list(self._get_databases_needed()),
         )
 
     def _get_flight_runner(self) -> FlightRunner:
