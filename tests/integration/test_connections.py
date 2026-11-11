@@ -117,6 +117,21 @@ def test_execute_converts_results(connection_adapter):
         assert response.rows_affected == 1
 
 
+def test_pg_command_tags(connection_adapter):
+    # return_pg_command_tags=on: DML sends only a command tag, no Count result.
+    with connection_adapter.connection_named("command_tags"):
+        handle = connection_adapter.connections.get_thread_connection().handle
+        cursor = handle.execute("CREATE TABLE main.command_tag_probe AS SELECT 1 AS id")
+        try:
+            assert cursor.description is None
+            assert cursor.statusmessage == "SELECT 1"
+            cursor = handle.execute("UPDATE main.command_tag_probe SET id = 2")
+            assert cursor.description is None
+            assert cursor.statusmessage == "UPDATE 1"
+        finally:
+            handle.execute("DROP TABLE main.command_tag_probe")
+
+
 def test_response_metadata_and_fetch_limit(connection_adapter):
     with connection_adapter.connection_named("responses"):
         response, table = connection_adapter.execute(
@@ -161,8 +176,7 @@ def test_response_metadata_and_fetch_limit(connection_adapter):
                 "WHEN MATCHED THEN UPDATE SET id = source.id + 10 "
                 "WHEN NOT MATCHED THEN INSERT VALUES (source.id)"
             )
-            # pg_endpoint does not currently supply a command tag for MERGE.
-            assert response.code == "UNKNOWN"
+            assert response.code == "MERGE"
             assert response.rows_affected == 3
             _, table = connection_adapter.execute(
                 "SELECT id FROM main.response_probe ORDER BY id", fetch=True

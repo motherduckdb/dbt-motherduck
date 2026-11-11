@@ -21,6 +21,8 @@ from dbt.flags import set_from_args
 from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
 from psycopg import sql as pg_sql
 
+from dbt.adapters.motherduck.connections import CONNECTION_OPTIONS
+
 
 @pytest.mark.parametrize(
     "pipeline, opening", [(False, False), (True, False), (False, True)]
@@ -262,7 +264,7 @@ def _exercise_dbt_cancellation():
         sslmode="verify-full",
         sslrootcert=credentials.resolved_sslrootcert,
         connect_timeout=credentials.connect_timeout,
-        options="-c attach_mode=single",
+        options=CONNECTION_OPTIONS,
         autocommit=True,
     ) as observer:
         for name in ("a", "b"):

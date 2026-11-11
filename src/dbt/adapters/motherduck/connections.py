@@ -45,6 +45,12 @@ AUTH_FAILURE_MESSAGES = (
     "not authenticated",
 )
 
+# Startup options for every MotherDuck PG endpoint connection.
+# return_pg_command_tags=on: DML and DDL send a Postgres command tag with the
+# affected-row count (UPDATE 3, MERGE 3, SELECT 5 for CTAS) instead of DuckDB's
+# Count/Success result sets.
+CONNECTION_OPTIONS = "-c attach_mode=single -c return_pg_command_tags=on"
+
 
 def is_auth_failure(exc):
     return isinstance(exc, psycopg.OperationalError) and (
@@ -116,7 +122,7 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         return connection
 
     def _connect(self, credentials):
-        options = "-c attach_mode=single"
+        options = CONNECTION_OPTIONS
         if credentials.session_name is not None:
             # postgres and the pg_endpoint rejects white-spaces or backslashes,
             # but duckdb clients accept them. the pg_endpoint correctly de-escapes them
@@ -377,24 +383,14 @@ class MotherDuckConnectionManager(SQLConnectionManager):
 
     @classmethod
     def get_response(cls, cursor):
+        # With return_pg_command_tags=on the tag carries the affected-row count,
+        # e.g. "INSERT 0 5", "UPDATE 3", "MERGE 3", "SELECT 5" (for CTAS).
+        # libpq parses it, and returns None for tags without a count.
         status = cursor.statusmessage or "OK"
-        # DuckDB DML returns a Count row; cursor.rowcount counts that result row.
-        affected = cursor.pgresult.command_tuples
-        code = status.split()[0]
-        # UPDATE/DELETE tags count the result row, and MERGE has an UNKNOWN tag.
-        if code in {"UPDATE", "DELETE"} or (
-            code == "UNKNOWN"
-            and cursor.pgresult.nfields == 1
-            and cursor.pgresult.fname(0) == b"Count"
-        ):
-            count = cursor.pgresult.get_value(0, 0)
-            affected = int(count) if count is not None else None
-            if code != "UNKNOWN":
-                status = code
         return AdapterResponse(
             _message=status,
-            code=code,
-            rows_affected=affected,
+            code=status.split()[0],
+            rows_affected=cursor.pgresult.command_tuples,
         )
 
     @classmethod
