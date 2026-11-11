@@ -124,7 +124,10 @@ class MotherDuckAdapter(SQLAdapter):
                     f"Could not clean up temporary table {context}: {exc}. "
                 )
 
+    @available
     def commit_if_has_connection(self):
+        # Jinja only sees @available methods. Incremental calls this because a
+        # Python Flight never opens a worker transaction to commit.
         connection = self.connections.get_if_exists()
         if connection is not None and not connection.transaction_open:
             return

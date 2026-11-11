@@ -17,6 +17,7 @@ from dbt.adapters.motherduck.flights import (
     sanitize_flight_name,
     unsupported_submission_message,
 )
+from dbt.adapters.motherduck.impl import MotherDuckAdapter
 
 COMPILED_CODE = """
 def model(dbt, session):
@@ -138,6 +139,12 @@ def test_build_requirements_passes_pip_options_through():
     config = FlightConfig(requirements=["--index-url https://example.com/simple"])
     lines = build_requirements(parsed_model(), config).splitlines()
     assert lines[0] == "--index-url https://example.com/simple"
+
+
+def test_commit_if_has_connection_is_visible_to_jinja():
+    # Incremental materializations call this. The jinja wrapper hides anything
+    # not marked @available, which failed every incremental model in CI.
+    assert "commit_if_has_connection" in MotherDuckAdapter._available_
 
 
 def test_local_submission_is_rejected_with_a_reason():
