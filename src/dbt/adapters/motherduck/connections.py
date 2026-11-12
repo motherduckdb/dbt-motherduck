@@ -276,9 +276,15 @@ class MotherDuckConnectionManager(SQLConnectionManager):
                 "Continuing cancelling the remaining connections."
             )
 
-    def execute(self, sql, auto_begin=False, fetch=False, limit=None):
+    def execute(
+        self, sql, auto_begin=False, fetch=False, limit=None, allow_when_canceled=False
+    ):
         with self.exception_handler(sql):
-            _, cursor = self.add_query(self._add_query_comment(sql), auto_begin)
+            _, cursor = self.add_query(
+                self._add_query_comment(sql),
+                auto_begin,
+                allow_when_canceled=allow_when_canceled,
+            )
             try:
                 response = self.get_response(cursor)
                 table = (
@@ -298,8 +304,9 @@ class MotherDuckConnectionManager(SQLConnectionManager):
         abridge_sql_log=False,
         retryable_exceptions=(),
         retry_limit=1,
+        allow_when_canceled=False,
     ):
-        if self.invocation_canceled.is_set():
+        if self.invocation_canceled.is_set() and not allow_when_canceled:
             raise DbtRuntimeError(
                 "The dbt invocation was cancelled. No further MotherDuck SQL will be executed."
             )

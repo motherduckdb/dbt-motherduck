@@ -13,6 +13,7 @@ from dbt.adapters.capability import (
     CapabilitySupport,
     Support,
 )
+from dbt.adapters.contracts.connection import AdapterResponse
 from dbt.adapters.events.logging import AdapterLogger
 from dbt.adapters.sql import SQLAdapter
 from dbt_common.contracts.constraints import (
@@ -26,6 +27,14 @@ from sqlparse import lexer
 from dbt.adapters.motherduck.column import MotherDuckColumn
 from dbt.adapters.motherduck.config import MotherDuckConfig, MotherDuckIndexConfig
 from dbt.adapters.motherduck.connections import MotherDuckConnectionManager
+from dbt.adapters.motherduck.credentials import FlightConfig
+from dbt.adapters.motherduck.flights import (
+    FLIGHT_NAME_KEY,
+    FlightRunner,
+    FlightSqlCursor,
+    is_flight_submission,
+    unsupported_submission_message,
+)
 from dbt.adapters.motherduck.relation import MotherDuckRelation
 
 
@@ -67,6 +76,8 @@ class MotherDuckAdapter(SQLAdapter):
         # schema if not exist`. this lock synchronizes adapter-wide creation of the schemas where
         # incremental models and snapshots build their staging tables.
         self._temp_relations_lock = Lock()
+        self._flight_runner: FlightRunner | None = None
+        self._flight_runner_lock = Lock()
 
     @classmethod
     def date_function(cls):
@@ -113,7 +124,10 @@ class MotherDuckAdapter(SQLAdapter):
                     f"Could not clean up temporary table {context}: {exc}. "
                 )
 
+    @available
     def commit_if_has_connection(self):
+        # Jinja only sees @available methods. Incremental calls this because a
+        # Python Flight never opens a worker transaction to commit.
         connection = self.connections.get_if_exists()
         if connection is not None and not connection.transaction_open:
             return
@@ -285,6 +299,54 @@ class MotherDuckAdapter(SQLAdapter):
     @available
     def parse_index(self, raw_index):
         return MotherDuckIndexConfig.parse(raw_index)
+
+    @available
+    def python_submission_error(self, submission_method):
+        # Empty when the model should run. Omitting submission_method means flight.
+        if is_flight_submission(submission_method):
+            return ""
+        return unsupported_submission_message(str(submission_method))
+
+    def submit_python_job(
+        self, parsed_model: dict, compiled_code: str
+    ) -> AdapterResponse:
+        method = (parsed_model.get("config") or {}).get("submission_method")
+        if not is_flight_submission(method):
+            raise DbtRuntimeError(unsupported_submission_message(str(method)))
+        # Inside-transaction hooks run after this returns, in the rename or
+        # merge transaction. Nothing of the user's is open while the Flight runs.
+        return self._get_flight_runner().submit(
+            FlightSqlCursor(self.connections),
+            self._with_flight_name(parsed_model),
+            compiled_code,
+            databases=list(self._get_databases_needed()),
+        )
+
+    def _get_flight_runner(self) -> FlightRunner:
+        with self._flight_runner_lock:
+            if self._flight_runner is None:
+                credentials = self.config.credentials
+                self._flight_runner = FlightRunner(
+                    credentials.flights or FlightConfig(),
+                    settings=credentials.settings,
+                    canceled=self.connections.invocation_canceled.is_set,
+                )
+            return self._flight_runner
+
+    def _with_flight_name(self, parsed_model: dict) -> dict:
+        name = self.execute_macro(
+            "flight_name",
+            kwargs={
+                "parsed_model": {
+                    "package_name": parsed_model.get("package_name"),
+                    "database": parsed_model.get("database"),
+                    "schema": parsed_model.get("schema"),
+                    "alias": parsed_model.get("alias"),
+                    "name": parsed_model.get("name"),
+                }
+            },
+        )
+        return {**parsed_model, FLIGHT_NAME_KEY: name}
 
     @available
     def warn_once(self, msg):

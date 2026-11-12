@@ -38,7 +38,8 @@ Choose the endpoint for your MotherDuck organization's [region](https://motherdu
 | `session_name` | None | Metadata passed to MotherDuck to tag workloads. It's visible on query history. |
 | `sslrootcert` | `certifi` | `certifi`, `system`, or a CA bundle path. |
 | `attach_databases` | `[]` | Extra databases to attach to every session. |
-| `settings` | `{}` | DuckDB settings applied to every new session. |
+| `settings` | `{}` | DuckDB settings applied to every new session, and replayed inside [Python model Flights](python-models.md). |
+| `flights` | None | Python model runtime. See [Python models](python-models.md#profile). |
 
 ## Browser login (SSO)
 
