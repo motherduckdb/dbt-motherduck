@@ -161,8 +161,7 @@ def test_response_metadata_and_fetch_limit(connection_adapter):
                 "WHEN MATCHED THEN UPDATE SET id = source.id + 10 "
                 "WHEN NOT MATCHED THEN INSERT VALUES (source.id)"
             )
-            # pg_endpoint does not currently supply a command tag for MERGE.
-            assert response.code == "UNKNOWN"
+            assert response.code == "MERGE"
             assert response.rows_affected == 3
             _, table = connection_adapter.execute(
                 "SELECT id FROM main.response_probe ORDER BY id", fetch=True
