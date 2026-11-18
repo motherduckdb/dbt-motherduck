@@ -3,10 +3,87 @@ from typing import Any, Literal, get_args
 
 import certifi
 from dbt.adapters.contracts.connection import Credentials
+from dbt_common.dataclass_schema import dbtClassMixin
 from dbt_common.exceptions import DbtRuntimeError
 
 Authenticator = Literal["token", "externalbrowser"]
 AUTHENTICATORS = get_args(Authenticator)
+
+
+def _non_empty_string(value: str | None) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and "\x00" not in value
+
+
+@dataclass
+class FlightConfig(dbtClassMixin):
+    """How Python models run on MotherDuck Flights.
+
+    The profile token is not sent to the Flight. `access_token_name` is the
+    label of a token stored in MotherDuck; the runtime injects it. Omit it to
+    use MotherDuck's built-in Flights token.
+    """
+
+    access_token_name: str | None = None
+    max_runtime_sec: int | None = None
+    instance_type: str | None = None
+    timeout_sec: int = 3600
+    poll_interval_sec: float = 2.0
+    log_lines: int = 0
+    log_url_template: str | None = None
+    requirements: list[str] | None = None
+    duckdb_version: str | None = None
+
+    def __post_init__(self):
+        if self.access_token_name is not None and not _non_empty_string(
+            self.access_token_name
+        ):
+            raise DbtRuntimeError(
+                "flights.access_token_name must be a non-empty string without NUL characters"
+            )
+        if self.instance_type is not None and not _non_empty_string(self.instance_type):
+            raise DbtRuntimeError(
+                "flights.instance_type must be a non-empty string without NUL characters"
+            )
+        if self.duckdb_version is not None and not _non_empty_string(
+            self.duckdb_version
+        ):
+            raise DbtRuntimeError(
+                "flights.duckdb_version must be a non-empty string without NUL characters"
+            )
+        if type(self.timeout_sec) is not int or self.timeout_sec < 1:
+            raise DbtRuntimeError("flights.timeout_sec must be a positive integer")
+        if type(self.max_runtime_sec) not in (int, type(None)) or (
+            self.max_runtime_sec is not None and self.max_runtime_sec < 0
+        ):
+            raise DbtRuntimeError(
+                "flights.max_runtime_sec must be a non-negative integer or omitted"
+            )
+        if type(self.log_lines) is not int or self.log_lines < 0:
+            raise DbtRuntimeError("flights.log_lines must be a non-negative integer")
+        if (
+            isinstance(self.poll_interval_sec, bool)
+            or not isinstance(self.poll_interval_sec, (int, float))
+            or self.poll_interval_sec <= 0
+        ):
+            raise DbtRuntimeError("flights.poll_interval_sec must be a positive number")
+        if self.requirements is not None and (
+            not isinstance(self.requirements, list)
+            or any(not _non_empty_string(entry) for entry in self.requirements)
+        ):
+            raise DbtRuntimeError(
+                "flights.requirements must be a list of non-empty requirement strings"
+            )
+        if self.log_url_template is not None:
+            if not _non_empty_string(self.log_url_template):
+                raise DbtRuntimeError(
+                    "flights.log_url_template must be a non-empty string without NUL characters"
+                )
+            try:
+                self.log_url_template.format(flight_id="flight", run_number=1)
+            except Exception as err:
+                raise DbtRuntimeError(
+                    "flights.log_url_template must format {flight_id} and {run_number}"
+                ) from err
 
 
 @dataclass
@@ -22,6 +99,8 @@ class MotherDuckCredentials(Credentials):
     session_name: str | None = None
     attach_databases: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
+    # Absent from _connection_keys(): access_token_name is a MotherDuck token label.
+    flights: FlightConfig | None = None
 
     def __post_init__(self):
         if self.authenticator not in AUTHENTICATORS:
@@ -87,6 +166,10 @@ class MotherDuckCredentials(Credentials):
             raise DbtRuntimeError(
                 "settings must be a mapping of non-empty setting names to string, boolean, or numeric values, without NUL characters"
             )
+        if isinstance(self.flights, dict):
+            self.flights = FlightConfig.from_dict(self.flights)
+        elif self.flights is not None and not isinstance(self.flights, FlightConfig):
+            raise DbtRuntimeError("flights must be a mapping of Flight settings")
 
     @property
     def resolved_sslrootcert(self):

@@ -46,3 +46,7 @@ class MotherDuckIndexConfig(dbtClassMixin):
 @dataclass
 class MotherDuckConfig(AdapterConfig):
     indexes: list[MotherDuckIndexConfig] | None = None
+    # Flight runner size for a Python model (F4, F16, F32). The profile default applies when unset.
+    instance_type: str | None = None
+    # None, "flight", and "flights" run the model on a Flight.
+    submission_method: str | None = None

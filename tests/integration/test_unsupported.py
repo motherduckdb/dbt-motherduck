@@ -6,15 +6,20 @@ class TestUnsupportedPython:
     @pytest.fixture(scope="class")
     def models(self):
         return {
-            "unsupported.py": "def model(dbt, session):\n    return None\n",
+            "unsupported.py": (
+                "def model(dbt, session):\n"
+                "    dbt.config(submission_method='local')\n"
+                "    return session\n"
+            ),
         }
 
-    def test_python_model_rejected(self, project):
+    def test_local_python_rejected(self, project):
+        # The Postgres endpoint cannot run Python. Flight is the only submission
+        # method, and anything else fails while the model is built.
         result = run_dbt(["run"], expect_pass=False)
-        assert (
-            "only supports languages ['sql']; got \"python\""
-            in result.results[0].message
-        )
+        message = result.results[0].message
+        assert "submission_method 'local' is not supported" in message
+        assert "MotherDuck Flights" in message
 
 
 class TestUnsupportedPlugin:

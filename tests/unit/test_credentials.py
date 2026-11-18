@@ -258,3 +258,40 @@ def test_invalid_oauth_client_id(changes, message):
     values = {"host": "example.com", "database": "db", "schema": "main"}
     with pytest.raises(DbtRuntimeError, match=message):
         MotherDuckCredentials(**(values | changes))
+
+
+def test_flights_config_round_trip():
+    credentials = MotherDuckCredentials.from_dict(
+        {
+            "host": "example.com",
+            "token": "secret",
+            "database": "db",
+            "schema": "main",
+            "flights": {
+                "access_token_name": "analytics-token",
+                "max_runtime_sec": 900,
+                "requirements": ["pandas==2.2.3"],
+                "duckdb_version": "1.5.3",
+            },
+        }
+    )
+    assert credentials.flights.access_token_name == "analytics-token"
+    assert credentials.flights.max_runtime_sec == 900
+    assert credentials.flights.requirements == ["pandas==2.2.3"]
+    again = MotherDuckCredentials.from_dict(credentials.to_dict())
+    assert again.flights.duckdb_version == "1.5.3"
+    assert "flights" not in credentials._connection_keys()
+    logged = " ".join(str(value) for _, value in credentials.connection_info())
+    assert "analytics-token" not in logged
+    assert "secret" not in logged
+
+
+def test_invalid_flights_config():
+    with pytest.raises(DbtRuntimeError, match="timeout_sec"):
+        MotherDuckCredentials(
+            host="example.com",
+            token="secret",
+            database="db",
+            schema="main",
+            flights={"timeout_sec": 0},
+        )

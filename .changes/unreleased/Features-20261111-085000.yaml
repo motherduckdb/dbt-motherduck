@@ -1,0 +1,5 @@
+kind: Features
+body: Run dbt Python models on MotherDuck Flights
+time: 2026-11-11T08:50:00-08:00
+custom:
+  Issue: ECO-1232
